@@ -1,0 +1,28 @@
+# Binaries
+bin/
+*.exe
+memcp
+
+# Data (auto-created)
+data/
+*.db
+*.db-wal
+*.db-shm
+
+# Logs
+tmp/
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# Go
+vendor/
+
+docs/

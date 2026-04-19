@@ -1,0 +1,50 @@
+# memcp standalone configuration
+# This is the default config for running memcp as a standalone MCP server.
+
+persona:
+  soul_dir: "./soul"
+  max_chars_per_file: 20000
+  total_max_chars: 100000
+
+memory:
+  db_path: "./data/memory.db"
+  context_window: 50
+  max_context_chars: 80000
+
+logging:
+  dir: "./tmp"
+  level: "info"
+  max_files: 5
+
+evolution:
+  enabled: true
+  trigger: "on_save"
+  min_findings: 1
+  min_messages: 20
+  max_memory_entries: 100
+  max_identity_patterns: 30
+  compaction_interval: 50
+
+observation:
+  enabled: true
+  max_result_summary: 500
+  max_facts_per_call: 5
+  async_upsert: true
+
+profile:
+  enabled: true
+  max_entries: 200
+  top_n_in_context: 10
+
+context:
+  max_chars: 80000
+  core_budget_pct: 20
+  work_budget_pct: 30
+  relev_budget_pct: 30
+  hist_budget_pct: 20
+
+skills:
+  dir: "./skills"
+  auto_evolve: true
+  max_patterns_per_skill: 20
+  max_chars_per_skill: 15000
