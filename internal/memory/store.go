@@ -16,7 +16,8 @@ import (
 
 // Store is the SQLite-backed persistence layer.
 type Store struct {
-	db *sql.DB
+	db     *sql.DB
+	dbPath string
 }
 
 // NewStore opens (or creates) a SQLite database at the given path.
@@ -46,7 +47,7 @@ func NewStore(dbPath string) (*Store, error) {
 		return nil, fmt.Errorf("enabling foreign keys: %w", err)
 	}
 
-	s := &Store{db: db}
+	s := &Store{db: db, dbPath: dbPath}
 	if err := s.migrate(); err != nil {
 		db.Close()
 		return nil, fmt.Errorf("running migrations: %w", err)
@@ -502,6 +503,16 @@ func (s *Store) GetFindingsSince(since time.Time) ([]*Finding, error) {
 	return scanFindings(rows)
 }
 
+// DeleteFinding removes a finding by key. Returns true if a finding was actually deleted.
+func (s *Store) DeleteFinding(key string) (bool, error) {
+	result, err := s.db.Exec(`DELETE FROM findings WHERE key = ?`, key)
+	if err != nil {
+		return false, fmt.Errorf("deleting finding: %w", err)
+	}
+	rows, _ := result.RowsAffected()
+	return rows > 0, nil
+}
+
 // CountFindings returns the total number of findings.
 func (s *Store) CountFindings() (int, error) {
 	var count int
@@ -904,6 +915,45 @@ func (s *Store) GetFindingsByDomain(domain string, limit int) ([]*Finding, error
 	}
 	defer rows.Close()
 	return scanFindings(rows)
+}
+
+// --- Maintenance ---
+
+// PruneTransientFindings deletes findings with importance=0 that haven't been updated in maxAgeDays.
+func (s *Store) PruneTransientFindings(maxAgeDays int) (int, error) {
+	cutoff := time.Now().AddDate(0, 0, -maxAgeDays)
+	result, err := s.db.Exec(`DELETE FROM findings WHERE importance = 0 AND updated_at < ?`, cutoff)
+	if err != nil {
+		return 0, err
+	}
+	rows, err := result.RowsAffected()
+	return int(rows), err
+}
+
+// DecayFindings downgrades finding importance to 0 if they haven't been updated in maxAgeDays.
+func (s *Store) DecayFindings(maxAgeDays int) (int, error) {
+	cutoff := time.Now().AddDate(0, 0, -maxAgeDays)
+	result, err := s.db.Exec(`UPDATE findings SET importance = 0 WHERE importance = 1 AND updated_at < ?`, cutoff)
+	if err != nil {
+		return 0, err
+	}
+	rows, err := result.RowsAffected()
+	return int(rows), err
+}
+
+// MaintainDB runs PRAGMA optimize for sqlite performance.
+func (s *Store) MaintainDB() error {
+	_, err := s.db.Exec(`PRAGMA optimize`)
+	return err
+}
+
+// GetDBSize returns the physical size of the SQLite DB file in bytes.
+func (s *Store) GetDBSize() (int64, error) {
+	info, err := os.Stat(s.dbPath)
+	if err != nil {
+		return 0, err
+	}
+	return info.Size(), nil
 }
 
 // --- Credential Sanitization ---

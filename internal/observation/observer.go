@@ -2,13 +2,14 @@
 package observation
 
 import (
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"log/slog"
 	"regexp"
 	"strings"
 	"sync"
-	"time"
 
 	"github.com/sivakumar455/memcp/internal/config"
 	"github.com/sivakumar455/memcp/internal/engine"
@@ -17,8 +18,10 @@ import (
 
 var (
 	// regexes for result parsing
-	errRegex   = regexp.MustCompile(`(?i)(error|exception|failed|timeout|refused|unavailable|OOMKilled|CrashLoopBackOff)`)
-	traceRegex = regexp.MustCompile(`(?i)(?:trace[_-]?id|x-b3-traceid|correlation[_-]?id)[:\s="]*([a-f0-9]{16,32})`)
+	errRegex          = regexp.MustCompile(`(?i)(error|exception|failed|timeout|refused|unavailable|OOMKilled|CrashLoopBackOff)`)
+	traceRegex        = regexp.MustCompile(`(?i)(?:trace[_-]?id|x-b3-traceid|correlation[_-]?id)[:\s="]*([a-f0-9]{16,32})`)
+	httpStatusRegex   = regexp.MustCompile(`(?i)(?:HTTP/\d\.\d\s+)?(4\d\d|5\d\d)\s+([A-Za-z\s]+)`)
+	goErrChainRegex   = regexp.MustCompile(`(?i)[a-z0-9_]+:\s+.*:\s+.*`)
 )
 
 // ProfileTracker is an interface for recording user behavior patterns.
@@ -136,31 +139,45 @@ func (o *Observer) extractFromArgs(rawArgs string) []extractedFact {
 		return facts
 	}
 
+	// Mapping definitions
+	type argMapping struct {
+		Prefix     string
+		Action     string
+		Tags       string
+		Importance int
+	}
+
+	mappings := map[string]argMapping{
+		"env":          {"env", "Accessed environment/namespace", "environment", 1},
+		"environment":  {"env", "Accessed environment/namespace", "environment", 1},
+		"namespace":    {"env", "Accessed environment/namespace", "environment", 1},
+		"ms_name":      {"ms", "Investigated microservice", "microservice", 1},
+		"service":      {"ms", "Investigated microservice", "microservice", 1},
+		"microservice": {"ms", "Investigated microservice", "microservice", 1},
+		"pod":          {"pod", "Examined pod/container", "state", 0},
+		"container":    {"pod", "Examined pod/container", "state", 0},
+		"cluster":      {"cluster", "Accessed cluster", "infrastructure", 1},
+		"region":       {"region", "Accessed region", "infrastructure", 1},
+		"host":         {"host", "Accessed host/server", "infrastructure", 1},
+		"server":       {"host", "Accessed host/server", "infrastructure", 1},
+		"url":          {"url", "Accessed URL/endpoint", "network", 0},
+		"endpoint":     {"url", "Accessed URL/endpoint", "network", 0},
+		"database":     {"db", "Accessed database", "infrastructure", 1},
+		"db":           {"db", "Accessed database", "infrastructure", 1},
+		"query":        {"query", "Executed query", "data", 0},
+	}
+
 	for k, v := range args {
 		valStr := fmt.Sprintf("%v", v)
 		valStr = summarizeString(valStr, 100)
+		kLower := strings.ToLower(k)
 
-		switch k {
-		case "env", "environment", "namespace":
+		if mapping, ok := mappings[kLower]; ok {
 			facts = append(facts, extractedFact{
-				Key:        fmt.Sprintf("env:%s", valStr),
-				Content:    fmt.Sprintf("Accessed environment/namespace: %s", valStr),
-				Tags:       "environment",
-				Importance: 1,
-			})
-		case "ms_name", "service", "microservice":
-			facts = append(facts, extractedFact{
-				Key:        fmt.Sprintf("ms:%s", valStr),
-				Content:    fmt.Sprintf("Investigated microservice: %s", valStr),
-				Tags:       "microservice",
-				Importance: 1,
-			})
-		case "pod", "container":
-			facts = append(facts, extractedFact{
-				Key:        fmt.Sprintf("pod:%s", valStr),
-				Content:    fmt.Sprintf("Examined pod/container: %s", valStr),
-				Tags:       "state",
-				Importance: 0, // usually transient logic
+				Key:        fmt.Sprintf("%s:%s", mapping.Prefix, valStr),
+				Content:    fmt.Sprintf("%s: %s", mapping.Action, valStr),
+				Tags:       mapping.Tags,
+				Importance: mapping.Importance,
 			})
 		}
 	}
@@ -169,14 +186,38 @@ func (o *Observer) extractFromArgs(rawArgs string) []extractedFact {
 
 func (o *Observer) extractFromResult(toolName, resultText string) []extractedFact {
 	var facts []extractedFact
-	lines := strings.Split(resultText, "\n")
-	
 	var errLines []string
-	
-	// Scan lines
+
+	// 1. Try structured JSON parsing first
+	var jsonObj map[string]interface{}
+	if err := json.Unmarshal([]byte(strings.TrimSpace(resultText)), &jsonObj); err == nil {
+		hasError := false
+		var errDesc string
+
+		if errVal, ok := jsonObj["error"]; ok {
+			hasError = true
+			errDesc = fmt.Sprintf("Error object: %v", errVal)
+		} else if errCode, ok := jsonObj["errorCode"]; ok {
+			hasError = true
+			msg := jsonObj["errorMessage"]
+			errDesc = fmt.Sprintf("Error code %v: %v", errCode, msg)
+		}
+
+		if hasError {
+			errLines = append(errLines, summarizeString(errDesc, 200))
+		}
+	}
+
+	// 2. Scan lines for other patterns
+	lines := strings.Split(resultText, "\n")
 	for _, line := range lines {
+		trimmed := strings.TrimSpace(line)
+		if trimmed == "" {
+			continue
+		}
+
 		// Trace IDs
-		matches := traceRegex.FindStringSubmatch(line)
+		matches := traceRegex.FindStringSubmatch(trimmed)
 		if len(matches) > 1 {
 			facts = append(facts, extractedFact{
 				Key:        fmt.Sprintf("trace:%s", matches[1]),
@@ -187,15 +228,25 @@ func (o *Observer) extractFromResult(toolName, resultText string) []extractedFac
 		}
 
 		// Errors (collect up to 5)
-		if len(errLines) < 5 && errRegex.MatchString(line) {
-			errLines = append(errLines, summarizeString(strings.TrimSpace(line), 200))
+		if len(errLines) < 5 {
+			isErr := errRegex.MatchString(trimmed) || 
+				httpStatusRegex.MatchString(trimmed) ||
+				goErrChainRegex.MatchString(trimmed)
+				
+			if isErr && !strings.Contains(strings.ToLower(trimmed), "no error") {
+				errLines = append(errLines, summarizeString(trimmed, 200))
+			}
 		}
 	}
 
 	if len(errLines) > 0 {
+		errContent := "Observed error logs:\n" + strings.Join(errLines, "\n")
+		// Use content hash for key so recurring identical errors update the same finding
+		hash := sha256.Sum256([]byte(toolName + ":" + strings.Join(errLines, "|")))
+		hashStr := hex.EncodeToString(hash[:8]) // 16-char hex
 		facts = append(facts, extractedFact{
-			Key:        fmt.Sprintf("obs:%s:%d", toolName, time.Now().Unix()),
-			Content:    "Observed error logs:\n" + strings.Join(errLines, "\n"),
+			Key:        fmt.Sprintf("obs:%s:%s", toolName, hashStr),
+			Content:    errContent,
 			Tags:       "observation,error",
 			Importance: 1,
 		})

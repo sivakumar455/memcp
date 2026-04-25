@@ -214,6 +214,38 @@ func (e *Engine) Save(key, content, tags string, importance int, domain string) 
 	return result, nil
 }
 
+// Delete removes a finding by key and logs the operation.
+func (e *Engine) Delete(key string) (*SaveResult, error) {
+	sessionID := ""
+	sess, err := e.Sessions.Current()
+	if err == nil {
+		sessionID = sess.ID
+	}
+
+	result, err := e.MemMgr.DeleteExplicit(key)
+	if err != nil {
+		return nil, err
+	}
+
+	// Trigger evolution loop if something was actually deleted
+	if result.Action == "DELETE" {
+		select {
+		case e.saveCh <- struct{}{}:
+		default:
+			// Channel full
+		}
+	}
+
+	if sessionID != "" {
+		_ = e.Store.SaveMessage(sessionID, "system",
+			fmt.Sprintf("[delete] %s: %s (key=%s)", result.Action, result.Message, key))
+		_ = e.Store.TouchSession(sessionID)
+	}
+
+	slog.Info("delete", "action", result.Action, "key", key)
+	return result, nil
+}
+
 // SaveCh returns the channel that signals save events (for evolution loop).
 func (e *Engine) SaveCh() <-chan struct{} {
 	return e.saveCh

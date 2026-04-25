@@ -6,18 +6,12 @@ import (
 	"sort"
 	"strings"
 
+	"github.com/sivakumar455/memcp/internal/common"
 	"github.com/sivakumar455/memcp/internal/memory"
 )
 
-// Common words excluded from keyword extraction.
-var evolverStopWords = map[string]bool{
-	"the": true, "and": true, "for": true, "not": true, "with": true,
-	"from": true, "this": true, "that": true, "are": true, "was": true,
-	"has": true, "had": true, "env": true, "get": true, "set": true,
-	"obs": true, "pod": true, "trace": true, "tool": true, "error": true,
-	"failed": true, "issue": true, "status": true, "value": true, "use": true,
-	"com": true, "org": true, "net": true, "www": true, "https": true, "http": true,
-}
+// evolverStopWords is aliased from the shared common package.
+var evolverStopWords = common.StopWords
 
 // Evolver handles per-skill pattern evolution from domain-filtered findings.
 type Evolver struct {

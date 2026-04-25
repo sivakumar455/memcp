@@ -9,6 +9,8 @@ import (
 
 	"github.com/sivakumar455/memcp/internal/memory"
 	"github.com/sivakumar455/memcp/internal/persona"
+	"golang.org/x/text/cases"
+	"golang.org/x/text/language"
 )
 
 // Compactor organizes findings into MEMORY.md progressively.
@@ -77,7 +79,18 @@ func (c *Compactor) RunFullCompaction() error {
 	}
 
 	var sb strings.Builder
-	sb.WriteString("# MEMORY.md — Accumulated Knowledge\n\n")
+	
+	// Read existing MEMORY.md to preserve user notes at the top
+	existingContent, _ := c.persona.ReadFile(persona.FileMemory)
+	if idx := strings.Index(existingContent, "## Active Findings"); idx != -1 {
+		sb.WriteString(strings.TrimSpace(existingContent[:idx]))
+		sb.WriteString("\n\n")
+	} else if idx := strings.Index(existingContent, "# MEMORY.md"); idx != -1 {
+		sb.WriteString(strings.TrimSpace(existingContent[:idx])) // if they put something before the title?
+		sb.WriteString("\n\n# MEMORY.md — Accumulated Knowledge\n\n")
+	} else {
+		sb.WriteString("# MEMORY.md — Accumulated Knowledge\n\n")
+	}
 
 	// 1. Active Findings
 	sb.WriteString("## Active Findings\n\n")
@@ -110,7 +123,13 @@ func (c *Compactor) RunFullCompaction() error {
 		sb.WriteString(formatArchive(archive))
 	}
 
-	return c.persona.UpdateFile(persona.FileMemory, sb.String())
+	newContent := sb.String()
+	if newContent == existingContent {
+		// Avoid unnecessary file rewrites and disk I/O if content hasn't drifted.
+		return nil
+	}
+
+	return c.persona.UpdateFile(persona.FileMemory, newContent)
 }
 
 func importanceStr(imp int) string {
@@ -157,7 +176,7 @@ func formatArchive(findings []*memory.Finding) string {
 		if f.Tags != "" {
 			parts := strings.SplitN(f.Tags, ",", 2)
 			if parts[0] != "" {
-				primaryTag = strings.Title(strings.ToLower(strings.TrimSpace(parts[0])))
+					primaryTag = cases.Title(language.English).String(strings.ToLower(strings.TrimSpace(parts[0])))
 			}
 		}
 

@@ -3,6 +3,7 @@ package mcpserver
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"log/slog"
 	"strings"
@@ -10,6 +11,7 @@ import (
 
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 	"github.com/sivakumar455/memcp/internal/engine"
+	"github.com/sivakumar455/memcp/internal/observation"
 	"github.com/sivakumar455/memcp/internal/skills"
 )
 
@@ -17,11 +19,16 @@ import (
 type Server struct {
 	engine    *engine.Engine
 	mcpServer *mcp.Server
+	observer  *observation.Observer
 }
 
 // New creates a new MCP server with all memcp tools registered.
 func New(eng *engine.Engine, version string) *Server {
 	s := &Server{engine: eng}
+
+	if eng.Cfg.Observation.Enabled {
+		s.observer = observation.New(eng.Store, eng.MemMgr, eng.Cfg.Observation, eng.Profiler)
+	}
 
 	mcpSrv := mcp.NewServer(
 		&mcp.Implementation{
@@ -58,67 +65,96 @@ func errorResult(text string) *mcp.CallToolResult {
 	}
 }
 
+// wrapObserver wraps an MCP tool handler with telemetry observation for standalone mode.
+func wrapObserver[T any](s *Server, name string, handler func(context.Context, *mcp.CallToolRequest, T) (*mcp.CallToolResult, any, error)) func(context.Context, *mcp.CallToolRequest, T) (*mcp.CallToolResult, any, error) {
+	return func(ctx context.Context, req *mcp.CallToolRequest, input T) (*mcp.CallToolResult, any, error) {
+		start := time.Now()
+		res, payload, err := handler(ctx, req, input)
+
+		if s.observer != nil {
+			argsRaw, _ := json.Marshal(input)
+			resText := ""
+			if res != nil && len(res.Content) > 0 {
+				if tc, ok := res.Content[0].(*mcp.TextContent); ok {
+					resText = tc.Text
+				}
+			}
+			if err != nil {
+				resText += "\nError: " + err.Error()
+			}
+			s.observer.Observe(name, "memcp-standalone", string(argsRaw), resText, int(time.Since(start).Milliseconds()))
+		}
+		return res, payload, err
+	}
+}
+
 // registerTools registers all memcp MCP tools.
 func (s *Server) registerTools() {
 	// agent_recall
 	mcp.AddTool(s.mcpServer, &mcp.Tool{
 		Name:        "agent_recall",
 		Description: "Recall relevant context from persistent memory. Call this FIRST at the start of every conversation to load cached findings, persona, and session history.",
-	}, s.handleRecall)
+	}, wrapObserver(s, "agent_recall", s.handleRecall))
 
 	// agent_save
 	mcp.AddTool(s.mcpServer, &mcp.Tool{
 		Name:        "agent_save",
 		Description: "Save a finding to persistent memory. Use for significant discoveries: root causes, environment states, important decisions. Do NOT save every intermediate step.",
-	}, s.handleSave)
+	}, wrapObserver(s, "agent_save", s.handleSave))
+
+	// agent_forget
+	mcp.AddTool(s.mcpServer, &mcp.Tool{
+		Name:        "agent_forget",
+		Description: "Delete a finding from persistent memory by key.",
+	}, wrapObserver(s, "agent_forget", s.handleForget))
 
 	// agent_session
 	mcp.AddTool(s.mcpServer, &mcp.Tool{
 		Name:        "agent_session",
 		Description: "Manage chat sessions. Use sessions to organize distinct work streams. Operations: list, create, switch.",
-	}, s.handleSession)
+	}, wrapObserver(s, "agent_session", s.handleSession))
 
 	// agent_persona
 	mcp.AddTool(s.mcpServer, &mcp.Tool{
 		Name:        "agent_persona",
 		Description: "Interact with persona files (SOUL.md, IDENTITY.md, MEMORY.md). Operations: view (all files), read (one file), update (one file, except SOUL.md which is immutable).",
-	}, s.handlePersona)
+	}, wrapObserver(s, "agent_persona", s.handlePersona))
 
 	// agent_evolve
 	mcp.AddTool(s.mcpServer, &mcp.Tool{
 		Name:        "agent_evolve",
 		Description: "Manage memory evolution. Operations: status (view stats), run (trigger if thresholds met), force (trigger unconditionally), compact (run full compaction on MEMORY.md).",
-	}, s.handleEvolve)
+	}, wrapObserver(s, "agent_evolve", s.handleEvolve))
 
 	// agent_profile
 	mcp.AddTool(s.mcpServer, &mcp.Tool{
 		Name:        "agent_profile",
 		Description: "View user behavior profile and system statistics. Operations: view (compact profile), stats (full system statistics).",
-	}, s.handleProfile)
+	}, wrapObserver(s, "agent_profile", s.handleProfile))
 
 	// agent_health
 	mcp.AddTool(s.mcpServer, &mcp.Tool{
 		Name:        "agent_health",
 		Description: "Check system health. Returns memory system status, database statistics, and evolution status.",
-	}, s.handleHealth)
+	}, wrapObserver(s, "agent_health", s.handleHealth))
 
 	// agent_tasks
 	mcp.AddTool(s.mcpServer, &mcp.Tool{
 		Name:        "agent_tasks",
 		Description: "List, count, or get background daemon tasks. Operations: list, count, get.",
-	}, s.handleTasks)
+	}, wrapObserver(s, "agent_tasks", s.handleTasks))
 
 	// agent_task_action
 	mcp.AddTool(s.mcpServer, &mcp.Tool{
 		Name:        "agent_task_action",
 		Description: "Act on a daemon task. Actions: start, complete, dismiss, snooze, comment.",
-	}, s.handleTaskAction)
+	}, wrapObserver(s, "agent_task_action", s.handleTaskAction))
 
 	// agent_skill
 	mcp.AddTool(s.mcpServer, &mcp.Tool{
 		Name:        "agent_skill",
 		Description: "Manage domain skills. Operations: list, view, create, update, evolve, merge.",
-	}, s.handleSkill)
+	}, wrapObserver(s, "agent_skill", s.handleSkill))
 }
 
 // --- Tool Input Structs ---
@@ -136,6 +172,11 @@ type SaveInput struct {
 	Tags       string `json:"tags,omitempty" jsonschema:"Comma-separated tags (e.g. defect,timeout,production)"`
 	Importance int    `json:"importance,omitempty" jsonschema:"Levels: 0 is transient, 1 is normal (default), 2 is permanent"`
 	Domain     string `json:"domain,omitempty" jsonschema:"Skill domain to route to. Auto-classified if omitted."`
+}
+
+// ForgetInput is the input for agent_forget.
+type ForgetInput struct {
+	Key string `json:"key" jsonschema:"Short identifier of the finding to delete"`
 }
 
 // SessionInput is the input for agent_session.
@@ -231,6 +272,19 @@ func (s *Server) handleSave(_ context.Context, _ *mcp.CallToolRequest, input Sav
 	result, err := s.engine.Save(input.Key, input.Content, input.Tags, importance, input.Domain)
 	if err != nil {
 		return errorResult(fmt.Sprintf("save failed: %v", err)), nil, nil
+	}
+
+	return textResult(result.Message), nil, nil
+}
+
+func (s *Server) handleForget(_ context.Context, _ *mcp.CallToolRequest, input ForgetInput) (*mcp.CallToolResult, any, error) {
+	if input.Key == "" {
+		return errorResult("key is required"), nil, nil
+	}
+
+	result, err := s.engine.Delete(input.Key)
+	if err != nil {
+		return errorResult(fmt.Sprintf("forget failed: %v", err)), nil, nil
 	}
 
 	return textResult(result.Message), nil, nil
@@ -494,6 +548,11 @@ func (s *Server) handleHealth(_ context.Context, _ *mcp.CallToolRequest, input H
 
 	toolCallCount, _ := s.engine.Store.CountToolCalls()
 	sb.WriteString(fmt.Sprintf("- Tool Calls: %d\n", toolCallCount))
+
+	if size, err := s.engine.Store.GetDBSize(); err == nil {
+		mb := float64(size) / (1024 * 1024)
+		sb.WriteString(fmt.Sprintf("- DB Size: %.2f MB (%d bytes)\n", mb, size))
+	}
 
 	// Evolution
 	evoEnabled := s.engine.Cfg.Evolution.Enabled

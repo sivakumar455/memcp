@@ -109,6 +109,26 @@ func (mm *MemoryManager) SaveObserved(key, content, tags, category, sessionID, d
 	return mm.SaveExplicit(key, content, tags, importance, sessionID, domain, "observation")
 }
 
+// DeleteExplicit removes a finding by key.
+func (mm *MemoryManager) DeleteExplicit(key string) (*SaveResult, error) {
+	deleted, err := mm.store.DeleteFinding(key)
+	if err != nil {
+		return nil, err
+	}
+	if !deleted {
+		return &SaveResult{
+			Action:  "NOOP",
+			Key:     key,
+			Message: fmt.Sprintf("Finding %q not found, nothing to delete", key),
+		}, nil
+	}
+	return &SaveResult{
+		Action:  "DELETE",
+		Key:     key,
+		Message: fmt.Sprintf("Deleted finding: %s", key),
+	}, nil
+}
+
 // --- Helper Functions ---
 
 // isRedundant checks if new content is already covered by existing content.
@@ -128,11 +148,18 @@ func isRedundant(existing, incoming string) bool {
 }
 
 // mergeContent appends new content if not already present.
+// It caps the total length to prevent unbounded growth across updates.
 func mergeContent(existing, incoming string) string {
 	if strings.Contains(strings.ToLower(existing), strings.ToLower(strings.TrimSpace(incoming))) {
 		return existing
 	}
-	return existing + "\n" + incoming
+	merged := existing + "\n" + incoming
+	const maxLen = 2000
+	if len(merged) > maxLen {
+		// Keep the first 1000 chars and the last 900 chars
+		return merged[:1000] + "\n... [content truncated due to length] ...\n" + merged[len(merged)-900:]
+	}
+	return merged
 }
 
 // mergeTags unions two comma-separated tag strings.

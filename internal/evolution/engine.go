@@ -9,20 +9,15 @@ import (
 	"sync"
 	"time"
 
+	"github.com/sivakumar455/memcp/internal/common"
 	"github.com/sivakumar455/memcp/internal/config"
 	"github.com/sivakumar455/memcp/internal/memory"
 	"github.com/sivakumar455/memcp/internal/persona"
 	"github.com/sivakumar455/memcp/internal/skills"
 )
 
-var stopWords = map[string]bool{
-	"the": true, "and": true, "for": true, "not": true, "with": true,
-	"from": true, "this": true, "that": true, "are": true, "was": true,
-	"has": true, "had": true, "env": true, "get": true, "set": true,
-	"obs": true, "pod": true, "trace": true, "tool": true, "error": true,
-	"failed": true, "issue": true, "status": true, "value": true, "use": true,
-	"com": true, "org": true, "net": true, "www": true, "https": true, "http": true,
-}
+// stopWords is aliased from the shared common package.
+var stopWords = common.StopWords
 
 // Engine runs the background evolution loop.
 type Engine struct {
@@ -119,39 +114,80 @@ drainLoop:
 
 // Run executes a single evolution cycle.
 func (e *Engine) Run() error {
+	return e.runWithThreshold(true)
+}
+
+// ForceRun executes an evolution cycle unconditionally, bypassing thresholds.
+func (e *Engine) ForceRun() error {
+	return e.runWithThreshold(false)
+}
+
+func (e *Engine) runWithThreshold(checkThresholds bool) error {
 	// Prevent concurrent executions
 	if !e.mu.TryLock() {
 		return nil // Skipped, already running
 	}
 	defer e.mu.Unlock()
 
-	// In the MVP, we just do a full compaction and pattern extraction on each run.
-	// We optimize this by checking thresholds if needed, but since data is small,
-	// Full extraction is fine.
-	
-	// Phase 3 requirements: 
-	// 1. Run full compaction on MEMORY.md if needed. (For simplicity, we always run it here or 
-	// just let the compactor rewrite).
+	// Threshold gating: skip evolution if not enough new data has accumulated
+	if checkThresholds && e.cfg.MinFindings > 0 {
+		lastEvo, _ := e.store.GetLastEvolutionTime()
+		newFindings, err := e.store.GetFindingsSince(lastEvo)
+		if err == nil && len(newFindings) < e.cfg.MinFindings {
+			slog.Debug("evolution skipped: insufficient new findings",
+				"new", len(newFindings), "threshold", e.cfg.MinFindings)
+			return nil
+		}
+	}
+
 	slog.Info("running evolution cycle")
 
+	var changes []string
+
+	// 0. Database Maintenance (Decay & Prune)
+	if decayed, err := e.store.DecayFindings(60); err == nil && decayed > 0 {
+		changes = append(changes, fmt.Sprintf("decayed %d findings", decayed))
+	} else if err != nil {
+		slog.Error("decay error", "error", err)
+	}
+	if pruned, err := e.store.PruneTransientFindings(14); err == nil && pruned > 0 {
+		changes = append(changes, fmt.Sprintf("pruned %d findings", pruned))
+	} else if err != nil {
+		slog.Error("prune error", "error", err)
+	}
+
+	// Count findings after prune for audit trail
+	findingsCount, _ := e.store.CountFindings()
+
+	// 1. Run full compaction on MEMORY.md
 	if err := e.compactor.RunFullCompaction(); err != nil {
 		slog.Error("compaction error", "error", err)
+	} else {
+		changes = append(changes, "compacted MEMORY.md")
 	}
 
 	// 2. Extract patterns to update IDENTITY.md
 	if err := e.updateIdentityPatterns(); err != nil {
 		return fmt.Errorf("updating IDENTITY.md patterns: %w", err)
 	}
+	changes = append(changes, "updated IDENTITY.md patterns")
 
 	// 3. Run per-skill evolution
 	if e.skillEvolver != nil {
 		if err := e.skillEvolver.EvolveAll(); err != nil {
 			slog.Error("skill evolution error", "error", err)
+		} else {
+			changes = append(changes, "evolved skills")
 		}
 	}
 
-	// Record in audit trail
-	e.recordEvolution()
+	// 4. DB Maintenance
+	if err := e.store.MaintainDB(); err != nil {
+		slog.Error("db maintenance error", "error", err)
+	}
+
+	// Record in audit trail with actual data
+	e.recordEvolution(findingsCount, strings.Join(changes, "; "))
 
 	return nil
 }
@@ -163,7 +199,9 @@ func (e *Engine) updateIdentityPatterns() error {
 	}
 
 	tagCounts := make(map[string]int)
-	wordCounts := make(map[string]int)
+
+	// Core Insights from specific high-importance findings
+	var insights []string
 
 	for _, f := range findings {
 		// Tags
@@ -176,15 +214,14 @@ func (e *Engine) updateIdentityPatterns() error {
 			}
 		}
 
-		// Keywords from keys (e.g. timeout-rootcause -> timeout, rootcause)
-		words := strings.FieldsFunc(f.Key, func(r rune) bool {
-			return r == '-' || r == '_' || r == '/' || r == ':' || r == ' '
-		})
-		for _, w := range words {
-			w = strings.ToLower(w)
-			if !stopWords[w] && len(w) > 2 {
-				wordCounts[w]++
+		// Permanent Findings -> Core Insights
+		if f.Importance == 2 {
+			firstLine := strings.Split(f.Content, "\n")[0]
+			summary := firstLine
+			if len(summary) > 200 {
+				summary = summary[:197] + "..."
 			}
+			insights = append(insights, fmt.Sprintf("- **%s**: %s", f.Key, summary))
 		}
 	}
 
@@ -209,21 +246,20 @@ func (e *Engine) updateIdentityPatterns() error {
 		sb.WriteString("\n")
 	}
 
-	// Frequent Keywords
-	keywords := sortMap(wordCounts, 3)
-	if len(keywords) > 0 {
-		sb.WriteString("### Frequent Keywords in Issues\n")
-		for i, kw := range keywords {
-			if i >= maxPatterns/2 {
-				break
+	// Extracted Core Insights
+	if len(insights) > 0 {
+		sb.WriteString("### Core Insights (Permanent Knowledge)\n")
+		for i, insight := range insights {
+			if i >= maxPatterns {
+				break // capping insights length
 			}
-			sb.WriteString(fmt.Sprintf("- **%s** (seen %d times)\n", kw.Key, kw.Val))
+			sb.WriteString(insight + "\n")
 		}
 		sb.WriteString("\n")
 	}
 
-	if len(topics) == 0 && len(keywords) == 0 {
-		sb.WriteString("(No recurring patterns learned yet.)\n")
+	if len(topics) == 0 && len(insights) == 0 {
+		sb.WriteString("(No recurring patterns or core insights learned yet.)\n")
 	}
 
 	// Now read IDENTITY.md, find "## Learned Patterns", and replace everything after it.
@@ -243,11 +279,12 @@ func (e *Engine) updateIdentityPatterns() error {
 	return e.persona.UpdateFile(persona.FileIdentity, identity)
 }
 
-func (e *Engine) recordEvolution() {
-	_, _ = e.store.DB().Exec(`
-		INSERT INTO soul_evolutions (evolution_type, target_file, content_added, findings_count)
-		VALUES ('auto', 'all', '', 0)
-	`)
+func (e *Engine) recordEvolution(findingsCount int, contentSummary string) {
+	if err := e.store.SaveEvolution("auto", "all", contentSummary,
+		fmt.Sprintf("Processed %d findings", findingsCount),
+		findingsCount, 0); err != nil {
+		slog.Error("failed to record evolution", "error", err)
+	}
 }
 
 type kv struct {
