@@ -19,9 +19,39 @@
 
 ## Architecture
 
-<p align="center">
-  <img src="docs/architecture.png" alt="memcp architecture diagram" width="720">
-</p>
+```mermaid
+graph TD
+    IDE["🖥️ IDE (Cursor / VS Code)"]
+
+    IDE --> SM["Standalone MCP<br/><i>agent_recall, agent_save, agent_session</i>"]
+    IDE --> CM["Composed MCP<br/><i>Proxy backend MCP servers + agent tools</i>"]
+    IDE --> SH["Shim Mode<br/><i>Transparent observation pipe</i>"]
+
+    SM --> CE
+    CM --> CE
+    SH --> CE
+
+    CE{"⚙️ Core Engine<br/>Memory Manager · Context Builder<br/>Observer · Persona · Session Mgr<br/>Skills Router"}
+
+    CE --> DB[("💾 SQLite (WAL)<br/>findings · tool_calls<br/>sessions · profile")]
+    CE --> SF["📁 Soul Files<br/>SOUL.md · IDENTITY.md · MEMORY.md"]
+
+    DB -- "Evolution Loop 🔄" --> SF
+
+    DA["🤖 Daemon (optional)"] --> CE
+    DA --> J["Jira"]
+    DA --> E["Email"]
+    DA --> G["Git"]
+
+    style IDE fill:#1a1a2e,stroke:#e0e0e0,color:#fff
+    style SM fill:#0d3b42,stroke:#00d2ff,color:#fff
+    style CM fill:#2d1b4e,stroke:#a855f7,color:#fff
+    style SH fill:#3b2e1a,stroke:#f59e0b,color:#fff
+    style CE fill:#1a1a3e,stroke:#6366f1,color:#fff
+    style DB fill:#1a2a1a,stroke:#22c55e,color:#fff
+    style SF fill:#2a1a1a,stroke:#ef4444,color:#fff
+    style DA fill:#1a1a2e,stroke:#8b8b8b,color:#fff
+```
 
 ## ✨ Features
 
