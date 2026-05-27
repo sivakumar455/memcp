@@ -33,9 +33,18 @@ type PersonaConfig struct {
 
 // MemoryConfig controls the SQLite memory store.
 type MemoryConfig struct {
-	DBPath          string `mapstructure:"db_path"`
-	ContextWindow   int    `mapstructure:"context_window"`
-	MaxContextChars int    `mapstructure:"max_context_chars"`
+	DBPath          string             `mapstructure:"db_path"`
+	ContextWindow   int                `mapstructure:"context_window"`
+	MaxContextChars int                `mapstructure:"max_context_chars"`
+	VectorSearch    VectorSearchConfig `mapstructure:"vector_search"`
+}
+
+// VectorSearchConfig controls semantic vector search options.
+type VectorSearchConfig struct {
+	Enabled   bool   `mapstructure:"enabled"`
+	Provider  string `mapstructure:"provider"`
+	OllamaURL string `mapstructure:"ollama_url"`
+	ModelName string `mapstructure:"model_name"`
 }
 
 // LoggingConfig controls log output.
@@ -201,6 +210,10 @@ func setDefaults(v *viper.Viper) {
 	v.SetDefault("memory.db_path", "./data/memory.db")
 	v.SetDefault("memory.context_window", 50)
 	v.SetDefault("memory.max_context_chars", 80000)
+	v.SetDefault("memory.vector_search.enabled", false)
+	v.SetDefault("memory.vector_search.provider", "ollama")
+	v.SetDefault("memory.vector_search.ollama_url", "http://localhost:11434")
+	v.SetDefault("memory.vector_search.model_name", "nomic-embed-text")
 
 	// Logging
 	v.SetDefault("logging.dir", "./tmp")

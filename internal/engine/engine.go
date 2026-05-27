@@ -5,6 +5,7 @@ import (
 	"log/slog"
 
 	"github.com/sivakumar455/memcp/internal/config"
+	"github.com/sivakumar455/memcp/internal/embedding"
 	"github.com/sivakumar455/memcp/internal/evolution"
 	"github.com/sivakumar455/memcp/internal/memory"
 	"github.com/sivakumar455/memcp/internal/persona"
@@ -35,6 +36,14 @@ func New(cfg *config.Config) (*Engine, error) {
 	store, err := memory.NewStore(cfg.Memory.DBPath)
 	if err != nil {
 		return nil, fmt.Errorf("initializing store: %w", err)
+	}
+
+	// Initialize Embedding Provider
+	embedder, err := embedding.NewProvider(cfg.Memory.VectorSearch)
+	if err != nil {
+		slog.Error("failed to initialize embedding provider", "error", err)
+	} else if embedder != nil {
+		store.SetEmbedder(embedder)
 	}
 
 	// Initialize subsystems
@@ -91,6 +100,12 @@ func NewObserverOnly(cfg *config.Config) (*Engine, error) {
 	store, err := memory.NewStore(cfg.Memory.DBPath)
 	if err != nil {
 		return nil, fmt.Errorf("initializing store: %w", err)
+	}
+
+	// Initialize Embedding Provider for observer if enabled
+	embedder, err := embedding.NewProvider(cfg.Memory.VectorSearch)
+	if err == nil && embedder != nil {
+		store.SetEmbedder(embedder)
 	}
 
 	memMgr := NewMemoryManager(store)

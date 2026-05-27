@@ -12,12 +12,15 @@ import (
 
 	"github.com/google/uuid"
 	_ "modernc.org/sqlite"
+
+	"github.com/sivakumar455/memcp/internal/embedding"
 )
 
 // Store is the SQLite-backed persistence layer.
 type Store struct {
-	db     *sql.DB
-	dbPath string
+	db       *sql.DB
+	dbPath   string
+	embedder embedding.Provider
 }
 
 // NewStore opens (or creates) a SQLite database at the given path.
@@ -57,7 +60,15 @@ func NewStore(dbPath string) (*Store, error) {
 
 // Close closes the database connection.
 func (s *Store) Close() error {
+	if s.embedder != nil {
+		s.embedder.Close()
+	}
 	return s.db.Close()
+}
+
+// SetEmbedder sets the embedding provider.
+func (s *Store) SetEmbedder(p embedding.Provider) {
+	s.embedder = p
 }
 
 // DB returns the underlying *sql.DB for advanced queries.
@@ -98,6 +109,7 @@ func (s *Store) migrate() error {
 			session_id TEXT DEFAULT '',
 			domain TEXT DEFAULT '',
 			version INTEGER DEFAULT 1,
+			embedding BLOB,
 			created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
 			updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
 		)`,
@@ -239,6 +251,7 @@ type Finding struct {
 	SessionID  string
 	Domain     string
 	Version    int
+	Embedding  []float32
 	CreatedAt  time.Time
 	UpdatedAt  time.Time
 }
@@ -393,40 +406,68 @@ func (s *Store) UpsertFinding(f *Finding) error {
 	}
 	now := time.Now().UTC()
 
-	_, err := s.db.Exec(`
-		INSERT INTO findings (id, key, content, tags, importance, source, session_id, domain, version, created_at, updated_at)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+	var embeddingBytes []byte
+	var err error
+
+	// Generate embedding if provider is available
+	if s.embedder != nil {
+		f.Embedding, err = s.embedder.Generate(f.Content)
+		if err != nil {
+			return fmt.Errorf("generating embedding: %w", err)
+		}
+		embeddingBytes, err = Float32ArrayToBytes(f.Embedding)
+		if err != nil {
+			return fmt.Errorf("serializing embedding: %w", err)
+		}
+	}
+
+	_, err = s.db.Exec(`
+		INSERT INTO findings (id, key, content, tags, importance, source, session_id, domain, version, embedding, created_at, updated_at)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 		ON CONFLICT(key) DO UPDATE SET
 			content = excluded.content,
 			tags = excluded.tags,
 			importance = CASE WHEN excluded.importance > findings.importance THEN excluded.importance ELSE findings.importance END,
 			domain = CASE WHEN excluded.domain != '' THEN excluded.domain ELSE findings.domain END,
 			version = findings.version + 1,
+			embedding = excluded.embedding,
 			updated_at = excluded.updated_at
-	`, f.ID, f.Key, f.Content, f.Tags, f.Importance, f.Source, f.SessionID, f.Domain, 1, now, now)
+	`, f.ID, f.Key, f.Content, f.Tags, f.Importance, f.Source, f.SessionID, f.Domain, 1, embeddingBytes, now, now)
 	return err
 }
 
 // GetFinding retrieves a finding by key.
 func (s *Store) GetFinding(key string) (*Finding, error) {
 	row := s.db.QueryRow(`
-		SELECT id, key, content, tags, importance, source, session_id, domain, version, created_at, updated_at
+		SELECT id, key, content, tags, importance, source, session_id, domain, version, embedding, created_at, updated_at
 		FROM findings WHERE key = ?`, key)
 	f := &Finding{}
-	err := row.Scan(&f.ID, &f.Key, &f.Content, &f.Tags, &f.Importance, &f.Source, &f.SessionID, &f.Domain, &f.Version, &f.CreatedAt, &f.UpdatedAt)
+	var embedBytes []byte
+	err := row.Scan(&f.ID, &f.Key, &f.Content, &f.Tags, &f.Importance, &f.Source, &f.SessionID, &f.Domain, &f.Version, &embedBytes, &f.CreatedAt, &f.UpdatedAt)
 	if err != nil {
 		return nil, err
+	}
+	if len(embedBytes) > 0 {
+		f.Embedding, _ = BytesToFloat32Array(embedBytes)
 	}
 	return f, nil
 }
 
-// SearchFindings performs a full-text search on findings using FTS5 with BM25 ranking.
+// SearchFindings performs a semantic or full-text search on findings.
 func (s *Store) SearchFindings(query string, limit int) ([]*Finding, error) {
 	if limit <= 0 {
 		limit = 20
 	}
 
-	// Try FTS5 first
+	if s.embedder != nil {
+		// Attempt semantic vector search first
+		findings, err := s.searchHybrid(query, limit)
+		if err == nil && len(findings) > 0 {
+			return findings, nil
+		}
+	}
+
+	// Try FTS5 fallback
 	findings, err := s.searchFTS(query, limit)
 	if err == nil && len(findings) > 0 {
 		return findings, nil
@@ -445,7 +486,7 @@ func (s *Store) searchFTS(query string, limit int) ([]*Finding, error) {
 
 	rows, err := s.db.Query(`
 		SELECT f.id, f.key, f.content, f.tags, f.importance, f.source,
-		       f.session_id, f.domain, f.version, f.created_at, f.updated_at
+		       f.session_id, f.domain, f.version, f.embedding, f.created_at, f.updated_at
 		FROM findings f
 		JOIN findings_fts fts ON f.rowid = fts.rowid
 		WHERE findings_fts MATCH ?
@@ -459,10 +500,37 @@ func (s *Store) searchFTS(query string, limit int) ([]*Finding, error) {
 	return scanFindings(rows)
 }
 
+func (s *Store) searchHybrid(query string, limit int) ([]*Finding, error) {
+	queryVector, err := s.embedder.Generate(query)
+	if err != nil {
+		return nil, fmt.Errorf("generating query embedding: %w", err)
+	}
+
+	// In a pure-Go setup without sqlite-vec, we fetch all findings into memory and sort.
+	// We cap it at 10,000 to prevent out-of-memory issues on massive DBs.
+	rows, err := s.db.Query(`
+		SELECT id, key, content, tags, importance, source, session_id, domain, version, embedding, created_at, updated_at
+		FROM findings
+		WHERE embedding IS NOT NULL
+		LIMIT 10000
+	`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	findings, err := scanFindings(rows)
+	if err != nil {
+		return nil, err
+	}
+
+	return SortFindingsBySimilarity(queryVector, findings, limit), nil
+}
+
 func (s *Store) searchLike(query string, limit int) ([]*Finding, error) {
 	pattern := "%" + query + "%"
 	rows, err := s.db.Query(`
-		SELECT id, key, content, tags, importance, source, session_id, domain, version, created_at, updated_at
+		SELECT id, key, content, tags, importance, source, session_id, domain, version, embedding, created_at, updated_at
 		FROM findings
 		WHERE key LIKE ? OR content LIKE ? OR tags LIKE ?
 		ORDER BY importance DESC, updated_at DESC
@@ -481,7 +549,7 @@ func (s *Store) GetAllFindings(limit int) ([]*Finding, error) {
 		limit = 500
 	}
 	rows, err := s.db.Query(`
-		SELECT id, key, content, tags, importance, source, session_id, domain, version, created_at, updated_at
+		SELECT id, key, content, tags, importance, source, session_id, domain, version, embedding, created_at, updated_at
 		FROM findings ORDER BY importance DESC, updated_at DESC LIMIT ?`, limit)
 	if err != nil {
 		return nil, err
@@ -493,7 +561,7 @@ func (s *Store) GetAllFindings(limit int) ([]*Finding, error) {
 // GetFindingsSince returns findings updated since the given time.
 func (s *Store) GetFindingsSince(since time.Time) ([]*Finding, error) {
 	rows, err := s.db.Query(`
-		SELECT id, key, content, tags, importance, source, session_id, domain, version, created_at, updated_at
+		SELECT id, key, content, tags, importance, source, session_id, domain, version, embedding, created_at, updated_at
 		FROM findings WHERE updated_at > ?
 		ORDER BY updated_at ASC`, since)
 	if err != nil {
@@ -523,7 +591,7 @@ func (s *Store) CountFindings() (int, error) {
 // ListFindings returns a list of findings, ordered by updated_at DESC.
 func (s *Store) ListFindings(limit, offset int) ([]*Finding, error) {
 	rows, err := s.db.Query(`
-		SELECT id, key, content, tags, importance, source, session_id, domain, version, created_at, updated_at
+		SELECT id, key, content, tags, importance, source, session_id, domain, version, embedding, created_at, updated_at
 		FROM findings
 		ORDER BY updated_at DESC
 		LIMIT ? OFFSET ?
@@ -537,13 +605,17 @@ func (s *Store) ListFindings(limit, offset int) ([]*Finding, error) {
 	for rows.Next() {
 		f := &Finding{}
 		var createdStr, updatedStr string
+		var embedBytes []byte
 		err := rows.Scan(
 			&f.ID, &f.Key, &f.Content, &f.Tags, &f.Importance,
-			&f.Source, &f.SessionID, &f.Domain, &f.Version,
+			&f.Source, &f.SessionID, &f.Domain, &f.Version, &embedBytes,
 			&createdStr, &updatedStr,
 		)
 		if err != nil {
 			return nil, err
+		}
+		if len(embedBytes) > 0 {
+			f.Embedding, _ = BytesToFloat32Array(embedBytes)
 		}
 		f.CreatedAt, _ = time.Parse(time.RFC3339, createdStr)
 		f.UpdatedAt, _ = time.Parse(time.RFC3339, updatedStr)
@@ -556,9 +628,13 @@ func scanFindings(rows *sql.Rows) ([]*Finding, error) {
 	var findings []*Finding
 	for rows.Next() {
 		f := &Finding{}
+		var embedBytes []byte
 		if err := rows.Scan(&f.ID, &f.Key, &f.Content, &f.Tags, &f.Importance, &f.Source,
-			&f.SessionID, &f.Domain, &f.Version, &f.CreatedAt, &f.UpdatedAt); err != nil {
+			&f.SessionID, &f.Domain, &f.Version, &embedBytes, &f.CreatedAt, &f.UpdatedAt); err != nil {
 			return nil, err
+		}
+		if len(embedBytes) > 0 {
+			f.Embedding, _ = BytesToFloat32Array(embedBytes)
 		}
 		findings = append(findings, f)
 	}

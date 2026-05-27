@@ -57,7 +57,7 @@ graph TD
 
 | Feature | Description |
 |---------|-------------|
-| **Persistent Memory** | Save and recall findings across sessions via SQLite with FTS5 full-text search |
+| **Hybrid Semantic Memory** | Save and recall findings using **Ollama Vector Embeddings** and pure-Go Cosine Similarity (fallback to FTS5) |
 | **Soul / Persona System** | Three-file persona (`SOUL.md`, `IDENTITY.md`, `MEMORY.md`) that evolves as the agent works |
 | **ADD / UPDATE / NOOP Pipeline** | Smart deduplication — new facts are added, existing facts are merged, redundant facts are skipped |
 | **Credential Sanitization** | Passwords, tokens, and secrets are auto-redacted before storage |
@@ -75,6 +75,7 @@ graph TD
 
 - **Go 1.25+**
 - An MCP-compatible IDE (e.g., [Cursor](https://cursor.sh/), VS Code)
+- **[Ollama](https://ollama.com/)** (Optional, but highly recommended for Semantic Vector Search)
 
 ### Build
 

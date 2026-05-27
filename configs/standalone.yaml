@@ -10,6 +10,11 @@ memory:
   db_path: "./data/memory.db"
   context_window: 50
   max_context_chars: 80000
+  vector_search:
+    enabled: true
+    provider: "ollama"
+    ollama_url: "http://localhost:11434"
+    model_name: "nomic-embed-text"
 
 logging:
   dir: "./tmp"
