@@ -1,0 +1,34 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>memcp dashboard</title>
+    <script src="https://unpkg.com/htmx.org@1.9.11"></script>
+    <link rel="stylesheet" href="/static/style.css">
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+</head>
+<body>
+    <header class="app-header">
+        <div class="logo">
+            <span class="logo-icon">🧠</span> memcp dashboard
+        </div>
+        <div class="status-indicator">
+            <span class="pulse"></span> Live
+        </div>
+    </header>
+
+    <!-- 
+      The main content grid. 
+      We use HTMX to automatically fetch the /api/updates endpoint every 5 seconds.
+      The server will return the HTML for the internal cards, replacing the innerHTML of this container.
+    -->
+    <main class="dashboard-grid" hx-get="/api/updates" hx-trigger="load, every 5s">
+        <!-- Initial loading state -->
+        <div class="loading-state">Connecting to memory store...</div>
+    </main>
+
+</body>
+</html>

@@ -21,8 +21,10 @@ import (
 	"github.com/sivakumar455/memcp/internal/gateway"
 	"github.com/sivakumar455/memcp/internal/logger"
 	mcpserver "github.com/sivakumar455/memcp/internal/mcp"
+	"github.com/sivakumar455/memcp/internal/memory"
 	"github.com/sivakumar455/memcp/internal/observation"
 	"github.com/sivakumar455/memcp/internal/shim"
+	"github.com/sivakumar455/memcp/internal/webui"
 )
 
 // Version is set at build time via ldflags.
@@ -53,7 +55,15 @@ and background task management for AI coding assistants via MCP.`,
 			fmt.Printf("memcp %s\n", Version)
 		},
 	}
+	
+	dashboardCmd := &cobra.Command{
+		Use:   "dashboard",
+		Short: "Launch the memcp live dashboard",
+		RunE:  runDashboard,
+	}
+
 	rootCmd.AddCommand(versionCmd)
+	rootCmd.AddCommand(dashboardCmd)
 
 	if err := rootCmd.Execute(); err != nil {
 		os.Exit(1)
@@ -165,4 +175,38 @@ func runStandalone(cmd *cobra.Command, args []string) error {
 	}()
 
 	return srv.Run(ctx)
+}
+
+func runDashboard(cmd *cobra.Command, args []string) error {
+	dataDir, _ := cmd.Flags().GetString("data-dir")
+	if dataDir == "" {
+		dataDir = os.Getenv("MEMCP_DATA_DIR")
+	}
+	if dataDir == "" {
+		home, err := os.UserHomeDir()
+		if err == nil {
+			dataDir = filepath.Join(home, ".memcp")
+		} else {
+			dataDir = "."
+		}
+	}
+
+	cfg, err := config.Load(dataDir)
+	if err != nil {
+		return fmt.Errorf("failed to load config: %w", err)
+	}
+
+	store, err := memory.NewStore(cfg.Memory.DBPath)
+	if err != nil {
+		return fmt.Errorf("failed to open database: %w", err)
+	}
+	defer store.Close()
+
+	srv, err := webui.NewServer(cfg, store)
+	if err != nil {
+		return fmt.Errorf("failed to initialize web ui: %w", err)
+	}
+
+	addr := "127.0.0.1:8788"
+	return srv.Start(addr)
 }

@@ -1,0 +1,58 @@
+{{ define "updates" }}
+<div class="column">
+    <div class="card">
+        <div class="card-header">
+            <h2>Recently Ingested Facts</h2>
+        </div>
+        <div class="card-body">
+            {{ if not .Findings }}
+                <div class="empty-state">No facts recorded yet.</div>
+            {{ else }}
+                <ul class="fact-list">
+                {{ range .Findings }}
+                    <li class="fact-item">
+                        <div class="fact-meta">
+                            <span class="fact-key">{{ .Key }}</span>
+                            <span class="fact-time">{{ .TimeAgo }}</span>
+                        </div>
+                        <div class="fact-content">{{ .Content }}</div>
+                    </li>
+                {{ end }}
+                </ul>
+            {{ end }}
+        </div>
+    </div>
+
+    <div class="card">
+        <div class="card-header">
+            <h2>Active Chat Sessions</h2>
+        </div>
+        <div class="card-body">
+            {{ if not .Sessions }}
+                <div class="empty-state">No active sessions.</div>
+            {{ else }}
+                <ul class="session-list">
+                {{ range .Sessions }}
+                    <li class="session-item">
+                        <span class="session-name">{{ .Name }}</span>
+                        <span class="session-time">{{ .UpdatedAt }}</span>
+                    </li>
+                {{ end }}
+                </ul>
+            {{ end }}
+        </div>
+    </div>
+</div>
+
+<div class="column">
+    <div class="card h-full">
+        <div class="card-header">
+            <h2>Live Persona (IDENTITY.md)</h2>
+            <span class="badge">Learned Patterns</span>
+        </div>
+        <div class="card-body">
+            <pre class="persona-content"><code>{{ .IdentityText }}</code></pre>
+        </div>
+    </div>
+</div>
+{{ end }}

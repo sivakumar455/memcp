@@ -8,9 +8,9 @@ import (
 
 	"github.com/sivakumar455/memcp/internal/config"
 	"github.com/sivakumar455/memcp/internal/engine"
+	"github.com/sivakumar455/memcp/internal/evolution"
 	"github.com/sivakumar455/memcp/internal/memory"
 	"github.com/sivakumar455/memcp/internal/persona"
-	"github.com/sivakumar455/memcp/internal/evolution"
 )
 
 // Server is the REST API gateway for memcp.
@@ -28,7 +28,7 @@ type Server struct {
 // NewServer initializes the HTTP gateway.
 func NewServer(cfg config.GatewayConfig, store *memory.Store, memMgr *engine.MemoryManager, pl *persona.Loader, evoEng *evolution.Engine) *Server {
 	if cfg.Address == "" {
-		cfg.Address = "127.0.0.1:8787"
+		cfg.Address = "127.0.0.1:12345"
 	}
 
 	s := &Server{
@@ -41,7 +41,7 @@ func NewServer(cfg config.GatewayConfig, store *memory.Store, memMgr *engine.Mem
 	}
 
 	s.setupRoutes()
-	
+
 	s.httpServer = &http.Server{
 		Addr:    s.cfg.Address,
 		Handler: s.mux,

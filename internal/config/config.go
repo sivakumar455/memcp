@@ -56,13 +56,13 @@ type LoggingConfig struct {
 
 // EvolutionConfig controls persona/memory evolution.
 type EvolutionConfig struct {
-	Enabled              bool   `mapstructure:"enabled"`
-	Trigger              string `mapstructure:"trigger"`
-	MinFindings          int    `mapstructure:"min_findings"`
-	MinMessages          int    `mapstructure:"min_messages"`
-	MaxMemoryEntries     int    `mapstructure:"max_memory_entries"`
-	MaxIdentityPatterns  int    `mapstructure:"max_identity_patterns"`
-	CompactionInterval   int    `mapstructure:"compaction_interval"`
+	Enabled             bool   `mapstructure:"enabled"`
+	Trigger             string `mapstructure:"trigger"`
+	MinFindings         int    `mapstructure:"min_findings"`
+	MinMessages         int    `mapstructure:"min_messages"`
+	MaxMemoryEntries    int    `mapstructure:"max_memory_entries"`
+	MaxIdentityPatterns int    `mapstructure:"max_identity_patterns"`
+	CompactionInterval  int    `mapstructure:"compaction_interval"`
 }
 
 // ObservationConfig controls tool call observation.
@@ -82,19 +82,19 @@ type ProfileConfig struct {
 
 // ContextConfig controls the tiered context budget allocation.
 type ContextConfig struct {
-	MaxChars      int `mapstructure:"max_chars"`
-	CoreBudgetPct int `mapstructure:"core_budget_pct"`
-	WorkBudgetPct int `mapstructure:"work_budget_pct"`
+	MaxChars       int `mapstructure:"max_chars"`
+	CoreBudgetPct  int `mapstructure:"core_budget_pct"`
+	WorkBudgetPct  int `mapstructure:"work_budget_pct"`
 	RelevBudgetPct int `mapstructure:"relev_budget_pct"`
-	HistBudgetPct int `mapstructure:"hist_budget_pct"`
+	HistBudgetPct  int `mapstructure:"hist_budget_pct"`
 }
 
 // SkillsConfig controls skill loading and routing.
 type SkillsConfig struct {
-	Dir                string `mapstructure:"dir"`
-	AutoEvolve         bool   `mapstructure:"auto_evolve"`
-	MaxPatternsPerSkill int   `mapstructure:"max_patterns_per_skill"`
-	MaxCharsPerSkill   int    `mapstructure:"max_chars_per_skill"`
+	Dir                 string `mapstructure:"dir"`
+	AutoEvolve          bool   `mapstructure:"auto_evolve"`
+	MaxPatternsPerSkill int    `mapstructure:"max_patterns_per_skill"`
+	MaxCharsPerSkill    int    `mapstructure:"max_chars_per_skill"`
 }
 
 // DaemonConfig holds options for background polling.
@@ -127,27 +127,12 @@ type GatewayConfig struct {
 	Address string `mapstructure:"address"`
 }
 
-// Load reads the configuration from a YAML file.
-// The config file is selected by the MEMCP_CONFIG env var (default: "standalone").
-// It searches for configs/{name}.yaml relative to the working directory.
+// Load reads the configuration from YAML files.
+// It searches for a global config in ~/.config/memcp/config.yaml (or XDG equivalent).
+// For backward compatibility, it falls back to configs/standalone.yaml.
+// Finally, it merges any project-specific overrides from ./.memcp.yaml.
 func Load(dataDir string) (*Config, error) {
 	v := viper.New()
-
-	// Determine config name
-	configName := os.Getenv("MEMCP_CONFIG")
-	if configName == "" {
-		configName = "standalone"
-	}
-
-	v.SetConfigName(configName)
-	v.SetConfigType("yaml")
-
-	// Search paths
-	if dataDir != "" {
-		v.AddConfigPath(filepath.Join(dataDir, "configs"))
-	}
-	v.AddConfigPath("./configs")
-	v.AddConfigPath(".")
 
 	// Set defaults
 	setDefaults(v)
@@ -157,13 +142,43 @@ func Load(dataDir string) (*Config, error) {
 	v.SetEnvKeyReplacer(strings.NewReplacer(".", "_"))
 	v.AutomaticEnv()
 
-	// Read config file
-	if err := v.ReadInConfig(); err != nil {
-		if _, ok := err.(viper.ConfigFileNotFoundError); ok {
-			// Config file not found; use defaults
-			fmt.Fprintf(os.Stderr, "memcp: no config file found, using defaults\n")
-		} else {
-			return nil, fmt.Errorf("reading config: %w", err)
+	globalLoaded := false
+
+	// 1. Attempt to load global config from XDG Base Directory
+	if configDir, err := os.UserConfigDir(); err == nil {
+		v.SetConfigFile(filepath.Join(configDir, "memcp", "config.yaml"))
+		if err := v.ReadInConfig(); err == nil {
+			globalLoaded = true
+		}
+	}
+
+	// 2. Backward compatibility fallback
+	if !globalLoaded {
+		configName := os.Getenv("MEMCP_CONFIG")
+		if configName == "" {
+			configName = "standalone"
+		}
+		v.SetConfigName(configName)
+		v.SetConfigType("yaml")
+		if dataDir != "" {
+			v.AddConfigPath(filepath.Join(dataDir, "configs"))
+		}
+		v.AddConfigPath("./configs")
+		v.AddConfigPath(".")
+
+		if err := v.ReadInConfig(); err != nil {
+			if _, ok := err.(viper.ConfigFileNotFoundError); !ok {
+				return nil, fmt.Errorf("reading legacy config: %w", err)
+			}
+		}
+	}
+
+	// 3. Merge local override (.memcp.yaml) from current working directory
+	localViper := viper.New()
+	localViper.SetConfigFile(".memcp.yaml")
+	if err := localViper.ReadInConfig(); err == nil {
+		if err := v.MergeConfigMap(localViper.AllSettings()); err != nil {
+			fmt.Fprintf(os.Stderr, "memcp: warning: failed to merge .memcp.yaml: %v\n", err)
 		}
 	}
 
@@ -261,5 +276,5 @@ func setDefaults(v *viper.Viper) {
 
 	// Gateway
 	v.SetDefault("gateway.enabled", false)
-	v.SetDefault("gateway.address", "127.0.0.1:8787")
+	v.SetDefault("gateway.address", "127.0.0.1:12345")
 }

@@ -53,3 +53,6 @@ skills:
   auto_evolve: true
   max_patterns_per_skill: 20
   max_chars_per_skill: 15000
+
+gateway:
+  address: "localhost:12345"
