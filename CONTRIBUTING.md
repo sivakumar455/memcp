@@ -24,25 +24,93 @@ Thanks for your interest in contributing to **memcp**! Whether it's a bug report
 
 ```
 memcp/
-├── main.go                 # Entry point (Cobra CLI)
-├── configs/                # YAML configuration files
-├── soul/                   # Persona files (SOUL.md, IDENTITY.md, MEMORY.md)
+├── cmd/memcp/main.go       # Entry point (Cobra CLI, registers extensions)
+├── configs/                # Default YAML config templates
+├── soul/                   # Default persona files (SOUL.md, IDENTITY.md, MEMORY.md)
+├── skills/                 # User-created domain skill files
+├── extensions/             # Public extension watchers
+│   └── webhook/            # Example: generic webhook watcher
+├── site/                   # Organization-specific content (see below)
 ├── internal/
 │   ├── config/             # Configuration loading
+│   ├── daemon/             # Background task queue (core interfaces)
 │   ├── engine/             # Core orchestrator
 │   ├── memory/             # SQLite store (CRUD, FTS5)
 │   ├── mcp/                # MCP server + tool handlers
+│   ├── tools/              # MCP client utilities
+│   ├── agent/              # Agent loop
+│   ├── llm/                # LLM provider abstraction
 │   ├── session/            # Session lifecycle
 │   ├── persona/            # Soul/persona file loader
 │   ├── observation/        # Tool call observer + fact extraction
 │   ├── evolution/          # Soul evolution system
 │   ├── skills/             # Domain skill routing
-│   ├── daemon/             # Background task queue
 │   ├── gateway/            # HTTP gateway server
 │   ├── shim/               # Transparent observation proxy
 │   └── logger/             # Structured logging
-└── docs/                   # Architecture documentation
+├── scripts/setup.go        # Bootstrap + MCP client setup
+└── .gitattributes          # Excludes site/ from public releases
 ```
+
+## 🔌 Writing Extensions
+
+Extensions are daemon watchers that poll external systems (Jira, email, etc.) and
+produce `daemon.Event`s. They live in separate Go packages and are registered at
+compile time via explicit imports in `cmd/memcp/main.go`.
+
+To create a new extension:
+
+1. Create a directory under `extensions/` (or `site/extensions/` for private use):
+   ```
+   extensions/slack/watcher.go
+   ```
+
+2. Implement the `daemon.Watcher` interface:
+   ```go
+   package slack
+
+   import "github.com/sivakumar455/memcp/internal/daemon"
+
+   type Watcher struct { /* ... */ }
+
+   func NewWatcher(/* config */) *Watcher { /* ... */ }
+   func (w *Watcher) Name() string              { return "slack" }
+   func (w *Watcher) Poll() ([]daemon.Event, error) { /* ... */ }
+   ```
+
+3. Import and register in `cmd/memcp/main.go`:
+   ```go
+   import extSlack "github.com/sivakumar455/memcp/extensions/slack"
+
+   // In registerExtensions():
+   if cfg.Daemon.Watchers.Slack.Enabled {
+       w := extSlack.NewWatcher(...)
+       d.Registry().Register(w)
+   }
+   ```
+
+4. Rebuild: `make build`
+
+See `extensions/webhook/watcher.go` for a complete example.
+
+## 📁 The `site/` Directory
+
+The `site/` directory holds organization-specific content that should not be
+shared upstream. It is excluded from public releases via `.gitattributes`.
+
+```
+site/
+├── extensions/      # Private extension watchers (Jira, email, etc.)
+├── configs/         # Config overrides with real paths/credentials
+├── soul/            # Persona files with learned domain knowledge
+└── skills/          # Domain skill files (your-domain, etc.)
+```
+
+The config loader searches `site/configs/` before `configs/`, and the bootstrap
+script (`scripts/setup.go`) copies from `site/` when populating `~/.memcp/`.
+
+To add your own organization content, create a `site/` directory and place your
+files there. They will never conflict with upstream updates.
 
 ## 🛠️ How to Contribute
 

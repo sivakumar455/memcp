@@ -27,34 +27,31 @@ func NewCompactor(store *memory.Store, persona *persona.Loader) *Compactor {
 	}
 }
 
-// AppendToMemory appends a new finding to the Active Findings section of MEMORY.md.
+// AppendToMemory appends a new finding to the Active Findings section of MEMORY.evolved.md.
 func (c *Compactor) AppendToMemory(f *memory.Finding) error {
-	content, err := c.persona.ReadFile(persona.FileMemory)
-	if err != nil {
-		return fmt.Errorf("reading MEMORY.md: %w", err)
+	content, _ := c.persona.ReadFile(persona.FileMemoryEvolved)
+	// If evolved file doesn't exist yet, start with a header
+	if content == "" {
+		content = "# Evolved Memory — System-Generated Findings\n\n## Active Findings\n"
 	}
 
 	entry := formatActiveFinding(f)
-	
-	// Find the Active Findings header
+
 	header := "## Active Findings\n"
 	idx := strings.Index(content, header)
 	if idx == -1 {
-		// Create the section if missing
 		content += "\n" + header + "\n" + entry
 	} else {
-		// Insert right after the header
 		insertAt := idx + len(header)
 		content = content[:insertAt] + "\n" + entry + "\n" + content[insertAt:]
 	}
 
-	// Update the file
-	return c.persona.UpdateFile(persona.FileMemory, content)
+	return c.persona.UpdateFile(persona.FileMemoryEvolved, content)
 }
 
-// RunFullCompaction rewrites MEMORY.md completely based on age tiers.
+// RunFullCompaction rewrites MEMORY.evolved.md completely based on age tiers.
+// The authored MEMORY.md is never touched — only the evolved variant is rewritten.
 func (c *Compactor) RunFullCompaction() error {
-	// Retrieve all active state (let's say up to 1000)
 	findings, err := c.store.ListFindings(1000, 0)
 	if err != nil {
 		return fmt.Errorf("listing findings: %w", err)
@@ -66,9 +63,8 @@ func (c *Compactor) RunFullCompaction() error {
 	for _, f := range findings {
 		ageDays := now.Sub(f.UpdatedAt).Hours() / 24.0
 
-		// Categorize by age (or importance)
 		if f.Importance == 2 {
-			active = append(active, f) // Permanent findings stay active
+			active = append(active, f)
 		} else if ageDays < 7 {
 			active = append(active, f)
 		} else if ageDays < 30 {
@@ -79,18 +75,7 @@ func (c *Compactor) RunFullCompaction() error {
 	}
 
 	var sb strings.Builder
-	
-	// Read existing MEMORY.md to preserve user notes at the top
-	existingContent, _ := c.persona.ReadFile(persona.FileMemory)
-	if idx := strings.Index(existingContent, "## Active Findings"); idx != -1 {
-		sb.WriteString(strings.TrimSpace(existingContent[:idx]))
-		sb.WriteString("\n\n")
-	} else if idx := strings.Index(existingContent, "# MEMORY.md"); idx != -1 {
-		sb.WriteString(strings.TrimSpace(existingContent[:idx])) // if they put something before the title?
-		sb.WriteString("\n\n# MEMORY.md — Accumulated Knowledge\n\n")
-	} else {
-		sb.WriteString("# MEMORY.md — Accumulated Knowledge\n\n")
-	}
+	sb.WriteString("# Evolved Memory — System-Generated Findings\n\n")
 
 	// 1. Active Findings
 	sb.WriteString("## Active Findings\n\n")
@@ -124,12 +109,14 @@ func (c *Compactor) RunFullCompaction() error {
 	}
 
 	newContent := sb.String()
+
+	// Read existing evolved content to avoid unnecessary I/O
+	existingContent, _ := c.persona.ReadFile(persona.FileMemoryEvolved)
 	if newContent == existingContent {
-		// Avoid unnecessary file rewrites and disk I/O if content hasn't drifted.
 		return nil
 	}
 
-	return c.persona.UpdateFile(persona.FileMemory, newContent)
+	return c.persona.UpdateFile(persona.FileMemoryEvolved, newContent)
 }
 
 func importanceStr(imp int) string {

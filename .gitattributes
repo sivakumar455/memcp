@@ -1,0 +1,4 @@
+# Exclude company-specific content from public releases (git archive).
+# The site/ directory contains organization-specific extensions, configs,
+# soul files, and skills that should not ship with the upstream repo.
+site/ export-ignore

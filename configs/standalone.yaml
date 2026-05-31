@@ -1,5 +1,10 @@
 # memcp standalone configuration
 # This is the default config for running memcp as a standalone MCP server.
+#
+# To customize for your organization, create site/configs/standalone.yaml
+# with your overrides. The config loader searches site/configs/ before this file.
+#
+# To enable the daemon, set MEMCP_DAEMON=true or daemon.enabled: true.
 
 persona:
   soul_dir: "./soul"
@@ -11,7 +16,7 @@ memory:
   context_window: 50
   max_context_chars: 80000
   vector_search:
-    enabled: true
+    enabled: false
     provider: "ollama"
     ollama_url: "http://localhost:11434"
     model_name: "nomic-embed-text"
@@ -55,4 +60,4 @@ skills:
   max_chars_per_skill: 15000
 
 gateway:
-  address: "localhost:12345"
+  address: "127.0.0.1:12345"

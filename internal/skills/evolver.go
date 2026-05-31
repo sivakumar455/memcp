@@ -3,6 +3,7 @@ package skills
 import (
 	"fmt"
 	"log/slog"
+	"os"
 	"sort"
 	"strings"
 
@@ -52,33 +53,24 @@ func (e *Evolver) EvolveAll() error {
 	return nil
 }
 
-// EvolveSkill evolves a single skill by extracting patterns from domain-filtered findings.
+// EvolveSkill evolves a single skill by extracting patterns from domain-filtered
+// findings and writing them to SKILL.evolved.md (never modifying the authored SKILL.md).
 func (e *Evolver) EvolveSkill(skill *Skill) error {
-	// Load findings for this skill's domain
 	findings, err := e.store.GetFindingsByDomain(skill.Name, 500)
 	if err != nil {
 		return fmt.Errorf("loading findings for domain %s: %w", skill.Name, err)
 	}
 
 	if len(findings) == 0 {
-		return nil // Nothing to evolve from
+		return nil
 	}
 
-	// Extract patterns (same algorithm as IDENTITY.md but scoped to this domain)
 	patternsSection := e.extractPatterns(findings)
 
-	// Replace the "Learned Patterns" section in the skill's markdown body
-	body := skill.Markdown
-	idx := strings.Index(body, "## Learned Patterns")
-	if idx != -1 {
-		body = body[:idx]
-	}
-
-	body = strings.TrimRight(body, "\n\r\t ") + "\n\n" + patternsSection
-
-	// Write back using UpdateMarkdown (preserves frontmatter)
-	if err := skill.UpdateMarkdown(body); err != nil {
-		return fmt.Errorf("updating skill %s: %w", skill.Name, err)
+	// Write evolved patterns to SKILL.evolved.md alongside the authored SKILL.md
+	evolvedPath := skill.EvolvedPath()
+	if err := os.WriteFile(evolvedPath, []byte(patternsSection), 0644); err != nil {
+		return fmt.Errorf("writing evolved skill %s: %w", skill.Name, err)
 	}
 
 	slog.Info("evolved skill", "skill", skill.Name, "findings", len(findings))
@@ -146,6 +138,36 @@ func (e *Evolver) extractPatterns(findings []*memory.Finding) string {
 	}
 
 	return sb.String()
+}
+
+// SkillEvolveResult holds the outcome of a single skill evolution.
+type SkillEvolveResult struct {
+	SkillName    string
+	PatternsAdded int
+	Skipped      bool
+	SkipReason   string
+}
+
+// EvolveAllWithResults evolves all skills and returns per-skill results.
+func (e *Evolver) EvolveAllWithResults() ([]SkillEvolveResult, error) {
+	skills, err := e.manager.LoadAll()
+	if err != nil {
+		return nil, fmt.Errorf("loading skills: %w", err)
+	}
+	var results []SkillEvolveResult
+	for _, skill := range skills {
+		if !skill.IsAutoEvolve() {
+			results = append(results, SkillEvolveResult{SkillName: skill.Name, Skipped: true, SkipReason: "auto_evolve disabled"})
+			continue
+		}
+		if err := e.EvolveSkill(skill); err != nil {
+			slog.Error("skill evolution failed", "skill", skill.Name, "error", err)
+			results = append(results, SkillEvolveResult{SkillName: skill.Name, Skipped: true, SkipReason: err.Error()})
+			continue
+		}
+		results = append(results, SkillEvolveResult{SkillName: skill.Name})
+	}
+	return results, nil
 }
 
 type kvEntry struct {

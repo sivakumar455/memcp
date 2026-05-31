@@ -44,6 +44,89 @@ func New(eng *engine.Engine, version string) *Server {
 	return s
 }
 
+// MCPServer returns the underlying go-sdk MCP server for registering additional tools/prompts.
+func (s *Server) MCPServer() *mcp.Server {
+	return s.mcpServer
+}
+
+// RegisterPrompts registers MCP prompts for context-aware workflows.
+func (s *Server) RegisterPrompts() {
+	s.mcpServer.AddPrompt(&mcp.Prompt{
+		Name:        "agent_investigate",
+		Description: "Start an investigation with full context loaded.",
+		Arguments: []*mcp.PromptArgument{
+			{Name: "topic", Description: "What to investigate", Required: true},
+			{Name: "session", Description: "Session name (default: auto-generated)", Required: false},
+		},
+	}, func(ctx context.Context, req *mcp.GetPromptRequest) (*mcp.GetPromptResult, error) {
+		topic := req.Params.Arguments["topic"]
+		session := req.Params.Arguments["session"]
+		if session == "" {
+			session = "investigation"
+		}
+		context_, err := s.engine.Recall(topic, session)
+		if err != nil {
+			context_ = "Failed to load context: " + err.Error()
+		}
+		promptText := "You are starting an investigation.\n\n"
+		if context_ != "" {
+			promptText += "Here is your persistent context:\n\n" + context_ + "\n\n"
+		}
+		promptText += "The user wants to investigate: " + topic + "\n\n"
+		promptText += "Use the available MCP tools to gather evidence. " +
+			"Save important findings using agent_save so they persist for future sessions."
+		return &mcp.GetPromptResult{
+			Description: "Investigation with context for: " + topic,
+			Messages: []*mcp.PromptMessage{
+				{Role: "user", Content: &mcp.TextContent{Text: promptText}},
+			},
+		}, nil
+	})
+
+	s.mcpServer.AddPrompt(&mcp.Prompt{
+		Name:        "agent_resume",
+		Description: "Resume the last session with full context loaded.",
+		Arguments: []*mcp.PromptArgument{
+			{Name: "session", Description: "Session name to resume (default: most recent)", Required: false},
+		},
+	}, func(ctx context.Context, req *mcp.GetPromptRequest) (*mcp.GetPromptResult, error) {
+		session := req.Params.Arguments["session"]
+		context_, err := s.engine.Recall("", session)
+		if err != nil {
+			context_ = "Failed to load context: " + err.Error()
+		}
+		promptText := "You are resuming a previous session.\n\n"
+		if context_ != "" {
+			promptText += "Here is your persistent context from previous work:\n\n" + context_ + "\n\n"
+		}
+		promptText += "Continue where you left off. Use agent_recall if you need more specific context."
+		return &mcp.GetPromptResult{
+			Description: "Resume session",
+			Messages: []*mcp.PromptMessage{
+				{Role: "user", Content: &mcp.TextContent{Text: promptText}},
+			},
+		}, nil
+	})
+
+	slog.Info("registered MCP prompts", "count", 2)
+}
+
+// RegisterTaskTools registers opt-in daemon task management tools (agent_tasks, agent_task_action).
+// Call this only when background task management is active.
+func (s *Server) RegisterTaskTools() {
+	mcp.AddTool(s.mcpServer, &mcp.Tool{
+		Name:        "agent_tasks",
+		Description: "List, count, or get background tasks. Operations: list, count, get.",
+	}, wrapObserver(s, "agent_tasks", s.handleTasks))
+
+	mcp.AddTool(s.mcpServer, &mcp.Tool{
+		Name:        "agent_task_action",
+		Description: "Act on a background task. Actions: start, complete, dismiss, snooze, comment.",
+	}, wrapObserver(s, "agent_task_action", s.handleTaskAction))
+
+	slog.Info("registered task management tools", "count", 2)
+}
+
 // Run starts the MCP server over stdio.
 func (s *Server) Run(ctx context.Context) error {
 	slog.Info("starting MCP server over stdio")
@@ -137,18 +220,6 @@ func (s *Server) registerTools() {
 		Name:        "agent_health",
 		Description: "Check system health. Returns memory system status, database statistics, and evolution status.",
 	}, wrapObserver(s, "agent_health", s.handleHealth))
-
-	// agent_tasks
-	mcp.AddTool(s.mcpServer, &mcp.Tool{
-		Name:        "agent_tasks",
-		Description: "List, count, or get background daemon tasks. Operations: list, count, get.",
-	}, wrapObserver(s, "agent_tasks", s.handleTasks))
-
-	// agent_task_action
-	mcp.AddTool(s.mcpServer, &mcp.Tool{
-		Name:        "agent_task_action",
-		Description: "Act on a daemon task. Actions: start, complete, dismiss, snooze, comment.",
-	}, wrapObserver(s, "agent_task_action", s.handleTaskAction))
 
 	// agent_skill
 	mcp.AddTool(s.mcpServer, &mcp.Tool{

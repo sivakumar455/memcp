@@ -71,6 +71,11 @@ func (pb *ProfileBuilder) Track(toolName string, args map[string]interface{}) {
 	}
 }
 
+// RecordToolUsage is an alias for Track.
+func (pb *ProfileBuilder) RecordToolUsage(toolName, backend string, args map[string]interface{}) {
+	pb.Track(toolName, args)
+}
+
 // CompactProfile generates a formatted profile string for Tier 0 context injection.
 func (pb *ProfileBuilder) CompactProfile(topN int) string {
 	if !pb.cfg.Enabled {

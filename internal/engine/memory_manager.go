@@ -129,6 +129,12 @@ func (mm *MemoryManager) DeleteExplicit(key string) (*SaveResult, error) {
 	}, nil
 }
 
+// ProcessFact saves an observed fact via the SaveObserved pipeline.
+func (mm *MemoryManager) ProcessFact(f Fact) error {
+	_, err := mm.SaveObserved(f.Key, f.Content, f.Tags, f.Category, "", f.Domain)
+	return err
+}
+
 // --- Helper Functions ---
 
 // isRedundant checks if new content is already covered by existing content.

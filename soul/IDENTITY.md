@@ -13,6 +13,4 @@ Add your domain-specific knowledge here. Examples:
 
 ## Learned Patterns
 
-*Auto-generated from accumulated findings. Updated by soul evolution.*
-
 (No patterns learned yet — start using agent_save to build knowledge.)

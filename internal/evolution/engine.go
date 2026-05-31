@@ -262,21 +262,8 @@ func (e *Engine) updateIdentityPatterns() error {
 		sb.WriteString("(No recurring patterns or core insights learned yet.)\n")
 	}
 
-	// Now read IDENTITY.md, find "## Learned Patterns", and replace everything after it.
-	identity, err := e.persona.ReadFile(persona.FileIdentity)
-	if err != nil {
-		return err
-	}
-
-	idx := strings.Index(identity, "## Learned Patterns")
-	if idx != -1 {
-		identity = identity[:idx]
-	}
-
-	// Append the new section
-	identity += sb.String()
-
-	return e.persona.UpdateFile(persona.FileIdentity, identity)
+	// Write the evolved content to IDENTITY.evolved.md (separate from authored IDENTITY.md).
+	return e.persona.UpdateFile(persona.FileIdentityEvolved, sb.String())
 }
 
 func (e *Engine) recordEvolution(findingsCount int, contentSummary string) {

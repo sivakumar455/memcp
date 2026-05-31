@@ -26,6 +26,11 @@ type Engine struct {
 	Profiler     *ProfileBuilder
 	Cfg          *config.Config
 	EvoEngine    *evolution.Engine
+	Observer     *Observer
+
+	// Extension hooks -- set by callers to inject custom behavior.
+	OnSave        func(key, content, tags string, importance int) // called after each successful save
+	TaskSummaryFn func() string                                  // injected to include task summaries in context
 
 	saveCh chan struct{}
 }
@@ -170,6 +175,11 @@ func (e *Engine) Recall(query, sessionName string) (string, error) {
 		profileText = e.Profiler.CompactProfile(0)
 	}
 
+	pendingTasks := ""
+	if e.TaskSummaryFn != nil {
+		pendingTasks = e.TaskSummaryFn()
+	}
+
 	opts := BuildOptions{
 		Query:         query,
 		SessionID:     sessionID,
@@ -177,6 +187,7 @@ func (e *Engine) Recall(query, sessionName string) (string, error) {
 		PersonaText:   personaText,
 		SkillsText:    skillsText,
 		ProfileText:   profileText,
+		PendingTasks:  pendingTasks,
 	}
 
 	result, err := e.CtxBuilder.Build(opts)
@@ -226,7 +237,26 @@ func (e *Engine) Save(key, content, tags string, importance int, domain string) 
 	}
 
 	slog.Info("save", "action", result.Action, "key", key)
+
+	if result.Action != "NOOP" && e.OnSave != nil {
+		e.OnSave(key, content, tags, importance)
+	}
+
 	return result, nil
+}
+
+// SaveSimple persists a finding, returning only an error.
+func (e *Engine) SaveSimple(key, content, tags string, importance int, sessionID, domain string) error {
+	_, err := e.Save(key, content, tags, importance, domain)
+	return err
+}
+
+// TriggerEvolve signals the evolution loop from an external caller.
+func (e *Engine) TriggerEvolve() {
+	select {
+	case e.saveCh <- struct{}{}:
+	default:
+	}
 }
 
 // Delete removes a finding by key and logs the operation.

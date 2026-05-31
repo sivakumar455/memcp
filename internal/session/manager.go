@@ -118,3 +118,41 @@ func (m *Manager) CurrentName() string {
 	}
 	return ""
 }
+
+// GetOrCreate gets an existing session by name or creates a new one.
+func (m *Manager) GetOrCreate(name string) (*memory.Session, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	sess, err := m.store.GetSessionByName(name)
+	if err == nil {
+		m.current = sess
+		return sess, nil
+	}
+	if err != sql.ErrNoRows {
+		return nil, fmt.Errorf("looking up session %q: %w", name, err)
+	}
+	sess, err = m.store.CreateSession(name)
+	if err != nil {
+		return nil, fmt.Errorf("creating session %q: %w", name, err)
+	}
+	m.current = sess
+	return sess, nil
+}
+
+// GetByName returns a session by name.
+func (m *Manager) GetByName(name string) (*memory.Session, error) {
+	return m.store.GetSessionByName(name)
+}
+
+// GetByID returns a session by ID.
+func (m *Manager) GetByID(id string) (*memory.Session, error) {
+	return m.store.GetSession(id)
+}
+
+// SetCurrent explicitly sets the current active session.
+func (m *Manager) SetCurrent(s *memory.Session) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.current = s
+}

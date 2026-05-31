@@ -144,3 +144,63 @@ type ScoredSkill struct {
 	Skill *Skill
 	Score int
 }
+
+// SetSkills replaces the loaded skills and rebuilds routing maps from frontmatter.
+func (r *Router) SetSkills(skills []*Skill) {
+	r.skills = skills
+	for _, s := range skills {
+		if s.Metadata.ToolPrefixes != "" {
+			for _, prefix := range strings.Split(s.Metadata.ToolPrefixes, ",") {
+				prefix = strings.TrimSpace(prefix)
+				if prefix != "" {
+					r.toolPrefixes[prefix] = s.Name
+				}
+			}
+		}
+		if s.Metadata.Tags != "" {
+			for _, tag := range strings.Split(s.Metadata.Tags, ",") {
+				tag = strings.TrimSpace(strings.ToLower(tag))
+				if tag != "" {
+					if _, exists := r.tagMapping[tag]; !exists {
+						r.tagMapping[tag] = s.Name
+					}
+				}
+			}
+		}
+	}
+}
+
+// AllDomains returns a deduplicated list of all known skill domains.
+func (r *Router) AllDomains() []string {
+	seen := make(map[string]bool)
+	var domains []string
+	for _, d := range r.toolPrefixes {
+		if !seen[d] {
+			seen[d] = true
+			domains = append(domains, d)
+		}
+	}
+	for _, d := range r.tagMapping {
+		if !seen[d] {
+			seen[d] = true
+			domains = append(domains, d)
+		}
+	}
+	for _, s := range r.skills {
+		if !seen[s.Name] {
+			seen[s.Name] = true
+			domains = append(domains, s.Name)
+		}
+	}
+	return domains
+}
+
+// ClassifyTool classifies by tool name only (convenience wrapper).
+func (r *Router) ClassifyTool(toolName string) string {
+	return r.Classify("", toolName, "")
+}
+
+// ClassifyTags classifies by tags only (convenience wrapper).
+func (r *Router) ClassifyTags(tags string) string {
+	return r.Classify("", "", tags)
+}
