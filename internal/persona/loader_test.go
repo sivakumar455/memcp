@@ -167,6 +167,67 @@ func TestInvalidFileName(t *testing.T) {
 	}
 }
 
+func TestEvolvedFilesConcat(t *testing.T) {
+	dir := setupTestSoulDir(t)
+	loader := NewLoader(dir, 20000, 100000)
+
+	// Write evolved content
+	evolvedIdentity := "## Learned Patterns\n\n- **timeout** (seen 10 times)\n"
+	if err := loader.UpdateFile(FileIdentityEvolved, evolvedIdentity); err != nil {
+		t.Fatalf("UpdateFile evolved identity: %v", err)
+	}
+	evolvedMemory := "# Evolved Memory\n\n## Active Findings\n\n- evolved finding\n"
+	if err := loader.UpdateFile(FileMemoryEvolved, evolvedMemory); err != nil {
+		t.Fatalf("UpdateFile evolved memory: %v", err)
+	}
+
+	// LoadAll should concatenate authored + evolved
+	files, err := loader.LoadAll()
+	if err != nil {
+		t.Fatalf("LoadAll: %v", err)
+	}
+
+	var identityContent, memoryContent string
+	for _, f := range files {
+		switch f.Name {
+		case FileIdentity:
+			identityContent = f.Content
+		case FileMemory:
+			memoryContent = f.Content
+		}
+	}
+
+	// Should contain both authored and evolved content
+	if !strings.Contains(identityContent, "Infrastructure Topology") {
+		t.Error("IDENTITY should contain authored content")
+	}
+	if !strings.Contains(identityContent, "timeout") {
+		t.Error("IDENTITY should contain evolved patterns")
+	}
+	if !strings.Contains(memoryContent, "timeout-rootcause") {
+		t.Error("MEMORY should contain authored content")
+	}
+	if !strings.Contains(memoryContent, "evolved finding") {
+		t.Error("MEMORY should contain evolved content")
+	}
+}
+
+func TestEvolvedFilesInContext(t *testing.T) {
+	dir := setupTestSoulDir(t)
+	loader := NewLoader(dir, 20000, 100000)
+
+	loader.UpdateFile(FileIdentityEvolved, "## Evolved Patterns\n\n- pattern A\n")
+
+	ctx, err := loader.LoadForContext()
+	if err != nil {
+		t.Fatalf("LoadForContext: %v", err)
+	}
+
+	if !strings.Contains(ctx, "pattern A") {
+		t.Error("LoadForContext should include evolved identity content")
+	}
+}
+
 func TestPerFileTruncation(t *testing.T) {
 	dir := t.TempDir()
 

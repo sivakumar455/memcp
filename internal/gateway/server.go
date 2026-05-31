@@ -1,4 +1,4 @@
-// Package gateway implements an HTTP API layer for external access to memory and daemon tasks.
+// Package gateway implements an HTTP API layer for external access to memory and tasks.
 package gateway
 
 import (
@@ -23,6 +23,8 @@ type Server struct {
 	memMgr  *engine.MemoryManager
 	pLoader *persona.Loader
 	evoEng  *evolution.Engine
+
+	webhookHandler http.Handler // optional: external webhook handler
 }
 
 // NewServer initializes the HTTP gateway.
@@ -48,6 +50,13 @@ func NewServer(cfg config.GatewayConfig, store *memory.Store, memMgr *engine.Mem
 	}
 
 	return s
+}
+
+// SetWebhookHandler registers an external webhook handler at the given path.
+func (s *Server) SetWebhookHandler(path string, handler http.Handler) {
+	s.webhookHandler = handler
+	s.mux.Handle("POST "+path, handler)
+	slog.Info("webhook handler registered", "path", path)
 }
 
 func (s *Server) setupRoutes() {

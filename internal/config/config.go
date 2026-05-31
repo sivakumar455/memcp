@@ -91,34 +91,123 @@ type ContextConfig struct {
 
 // SkillsConfig controls skill loading and routing.
 type SkillsConfig struct {
-	Dir                 string `mapstructure:"dir"`
-	AutoEvolve          bool   `mapstructure:"auto_evolve"`
-	MaxPatternsPerSkill int    `mapstructure:"max_patterns_per_skill"`
-	MaxCharsPerSkill    int    `mapstructure:"max_chars_per_skill"`
+	Dir                 string        `mapstructure:"dir"`
+	AutoEvolve          bool          `mapstructure:"auto_evolve"`
+	MaxPatternsPerSkill int           `mapstructure:"max_patterns_per_skill"`
+	MaxCharsPerSkill    int           `mapstructure:"max_chars_per_skill"`
+	DomainRouting       DomainRouting `mapstructure:"domain_routing"`
 }
 
-// DaemonConfig holds options for background polling.
+// DomainRouting maps tool prefixes and tags to skill domains.
+type DomainRouting struct {
+	ToolPrefixes map[string]string `mapstructure:"tool_prefixes"`
+	TagMapping   map[string]string `mapstructure:"tag_mapping"`
+}
+
+// DaemonConfig holds options for background polling and watchers.
 type DaemonConfig struct {
-	Enabled      bool                              `mapstructure:"enabled"`
-	IntervalSecs int                               `mapstructure:"interval"`
-	MaxAgeDays   int                               `mapstructure:"max_age_days"`
-	RunOnStart   bool                              `mapstructure:"run_on_start"`
-	Watchers     map[string]map[string]interface{} `mapstructure:"watchers"`
-	Rules        []RuleConfig                      `mapstructure:"rules"`
+	Enabled     bool              `mapstructure:"enabled"`
+	Interval    int               `mapstructure:"interval"`
+	Watchers    WatchersConfig    `mapstructure:"watchers"`
+	Rules       []ClassifierRule  `mapstructure:"rules"`
+	Gateway     DaemonGateway     `mapstructure:"gateway"`
+	Cleanup     CleanupConfig     `mapstructure:"cleanup"`
+	CursorAgent CursorAgentConfig `mapstructure:"cursor_agent"`
 }
 
-// RuleConfig defines a classification rule.
-type RuleConfig struct {
+// WatchersConfig groups all daemon watcher configurations.
+type WatchersConfig struct {
+	Jira      JiraWatcherConfig      `mapstructure:"jira"`
+	Email     EmailWatcherConfig     `mapstructure:"email"`
+	Teams     TeamsWatcherConfig     `mapstructure:"teams"`
+	Bitbucket BitbucketWatcherConfig `mapstructure:"bitbucket"`
+}
+
+// JiraWatcherConfig configures the Jira polling watcher.
+type JiraWatcherConfig struct {
+	Enabled       bool              `mapstructure:"enabled"`
+	Interval      int               `mapstructure:"interval"`
+	Command       string            `mapstructure:"command"`
+	Args          []string          `mapstructure:"args"`
+	Env           map[string]string `mapstructure:"env"`
+	JQL           string            `mapstructure:"jql"`
+	ProjectFilter []string          `mapstructure:"project_filter"`
+}
+
+// EmailWatcherConfig configures the email polling watcher.
+type EmailWatcherConfig struct {
+	Enabled    bool              `mapstructure:"enabled"`
+	Interval   int               `mapstructure:"interval"`
+	Command    string            `mapstructure:"command"`
+	Args       []string          `mapstructure:"args"`
+	Env        map[string]string `mapstructure:"env"`
+	DigestPath string            `mapstructure:"digest_path"`
+}
+
+// TeamsWatcherConfig configures the MS Teams polling watcher.
+type TeamsWatcherConfig struct {
+	Enabled       bool     `mapstructure:"enabled"`
+	Interval      int      `mapstructure:"interval"`
+	GraphEndpoint string   `mapstructure:"graph_endpoint"`
+	PollChats     bool     `mapstructure:"poll_chats"`
+	PollChannels  []string `mapstructure:"poll_channels"`
+}
+
+// BitbucketWatcherConfig configures the Bitbucket PR polling watcher.
+type BitbucketWatcherConfig struct {
+	Enabled       bool                   `mapstructure:"enabled"`
+	Interval      int                    `mapstructure:"interval"`
+	Command       string                 `mapstructure:"command"`
+	Args          []string               `mapstructure:"args"`
+	Env           map[string]string      `mapstructure:"env"`
+	BaseURL       string                 `mapstructure:"base_url"`
+	Token         string                 `mapstructure:"token"`
+	ProjectFilter []string               `mapstructure:"project_filter"`
+	RepoFilter    []string               `mapstructure:"repo_filter"`
+	IncludeDiff   bool                   `mapstructure:"include_diff"`
+	MaxDiffLines  int                    `mapstructure:"max_diff_lines"`
+	Webhook       BitbucketWebhookConfig `mapstructure:"webhook"`
+}
+
+// BitbucketWebhookConfig controls inbound Bitbucket webhook processing.
+type BitbucketWebhookConfig struct {
+	Enabled bool   `mapstructure:"enabled"`
+	Secret  string `mapstructure:"secret"`
+}
+
+// ClassifierRule defines a classification rule for daemon events.
+type ClassifierRule struct {
 	Match    RuleMatch `mapstructure:"match"`
 	Priority string    `mapstructure:"priority"`
 	Action   string    `mapstructure:"action"`
 }
 
+// RuleMatch defines conditions for matching daemon events.
 type RuleMatch struct {
 	Source  string `mapstructure:"source"`
 	Field   string `mapstructure:"field"`
 	Value   string `mapstructure:"value"`
 	Pattern string `mapstructure:"pattern"`
+}
+
+// DaemonGateway configures the daemon HTTP API server.
+type DaemonGateway struct {
+	Host string `mapstructure:"host"`
+	Port int    `mapstructure:"port"`
+}
+
+// CleanupConfig controls automatic task cleanup.
+type CleanupConfig struct {
+	MaxAgeDays int  `mapstructure:"max_age_days"`
+	RunOnStart bool `mapstructure:"run_on_start"`
+}
+
+// CursorAgentConfig controls the Cursor CLI agent integration.
+type CursorAgentConfig struct {
+	Enabled    bool   `mapstructure:"enabled"`
+	CursorPath string `mapstructure:"cursor_path"`
+	Timeout    int    `mapstructure:"timeout"`
+	WorkDir    string `mapstructure:"work_dir"`
 }
 
 // GatewayConfig holds options for the HTTP API server.
@@ -127,9 +216,19 @@ type GatewayConfig struct {
 	Address string `mapstructure:"address"`
 }
 
+// BaseDir is the resolved base directory of the memcp binary.
+var BaseDir string
+
+// Cfg is the global config singleton, populated by Load().
+var Cfg Config
+
 // Load reads the configuration from YAML files.
-// It searches for a global config in ~/.config/memcp/config.yaml (or XDG equivalent).
-// For backward compatibility, it falls back to configs/standalone.yaml.
+// Search priority:
+//  1. XDG config dir (~/.config/memcp/config.yaml)
+//  2. {dataDir}/configs/  (e.g. ~/.memcp/configs/)
+//  3. ./site/configs/     (company overrides, excluded from public repo)
+//  4. ./configs/          (upstream defaults)
+//
 // Finally, it merges any project-specific overrides from ./.memcp.yaml.
 func Load(dataDir string) (*Config, error) {
 	v := viper.New()
@@ -152,7 +251,7 @@ func Load(dataDir string) (*Config, error) {
 		}
 	}
 
-	// 2. Backward compatibility fallback
+	// 2. Fallback: search dataDir, site/configs, configs, cwd
 	if !globalLoaded {
 		configName := os.Getenv("MEMCP_CONFIG")
 		if configName == "" {
@@ -163,6 +262,7 @@ func Load(dataDir string) (*Config, error) {
 		if dataDir != "" {
 			v.AddConfigPath(filepath.Join(dataDir, "configs"))
 		}
+		v.AddConfigPath("./site/configs")
 		v.AddConfigPath("./configs")
 		v.AddConfigPath(".")
 
@@ -271,8 +371,8 @@ func setDefaults(v *viper.Viper) {
 	// Daemon
 	v.SetDefault("daemon.enabled", false)
 	v.SetDefault("daemon.interval", 300)
-	v.SetDefault("daemon.max_age_days", 30)
-	v.SetDefault("daemon.run_on_start", true)
+	v.SetDefault("daemon.cleanup.max_age_days", 30)
+	v.SetDefault("daemon.cleanup.run_on_start", true)
 
 	// Gateway
 	v.SetDefault("gateway.enabled", false)

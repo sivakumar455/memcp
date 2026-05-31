@@ -38,6 +38,8 @@ func NewManager(dir string) *Manager {
 }
 
 // LoadAll loads all skills from the skills directory.
+// For each skill, if a SKILL.evolved.md exists alongside SKILL.md the evolved
+// content is appended to the Markdown body (authored first, evolved second).
 func (m *Manager) LoadAll() ([]*Skill, error) {
 	if err := os.MkdirAll(m.dir, 0755); err != nil {
 		return nil, fmt.Errorf("creating skills dir: %w", err)
@@ -71,6 +73,9 @@ func (m *Manager) LoadAll() ([]*Skill, error) {
 		}
 		skill.Path = skillFile
 
+		// Merge evolved content if present
+		mergeEvolvedContent(skill)
+
 		skills = append(skills, skill)
 	}
 
@@ -99,6 +104,11 @@ func (m *Manager) LoadForContext(maxChars int, query, toolCalls string) (string,
 		return text[:maxChars] + "\n...[truncated]", nil
 	}
 	return text, nil
+}
+
+// EvolvedPath returns the path to the SKILL.evolved.md file alongside SKILL.md.
+func (s *Skill) EvolvedPath() string {
+	return filepath.Join(filepath.Dir(s.Path), "SKILL.evolved.md")
 }
 
 // IsAutoEvolve checks if the skill should be auto-evolved.
@@ -255,6 +265,99 @@ func (m *Manager) MergeSkills(source, target *Skill) error {
 	}
 
 	return target.UpdateMarkdown(sb.String())
+}
+
+// Dir returns the skills directory path.
+func (m *Manager) Dir() string { return m.dir }
+
+// Discover is an alias for LoadAll that returns skills with populated Dir fields.
+func (m *Manager) Discover() ([]*Skill, error) { return m.LoadAll() }
+
+// LoadSkill loads a single skill by name (merging any evolved content).
+func (m *Manager) LoadSkill(name string) (*Skill, error) {
+	skillFile := filepath.Join(m.dir, name, "SKILL.md")
+	data, err := os.ReadFile(skillFile)
+	if err != nil {
+		return nil, fmt.Errorf("reading skill %s: %w", name, err)
+	}
+	skill, err := ParseSkillFile(data)
+	if err != nil {
+		return nil, fmt.Errorf("parsing skill %s: %w", name, err)
+	}
+	skill.Path = skillFile
+	mergeEvolvedContent(skill)
+	return skill, nil
+}
+
+// UpdateSkill updates a skill's SKILL.md content by name.
+func (m *Manager) UpdateSkill(name, content string) error {
+	skill, err := m.LoadSkill(name)
+	if err != nil {
+		return err
+	}
+	return skill.UpdateMarkdown(content)
+}
+
+// ReadSkillFile reads an arbitrary file from a skill directory.
+func (m *Manager) ReadSkillFile(name, filename string) (string, error) {
+	p := filepath.Join(m.dir, name, filename)
+	data, err := os.ReadFile(p)
+	if err != nil {
+		return "", err
+	}
+	return string(data), nil
+}
+
+// Tags returns the skill's tags as a slice.
+func (s *Skill) Tags() []string {
+	if s.Metadata.Tags == "" {
+		return nil
+	}
+	parts := strings.Split(s.Metadata.Tags, ",")
+	tags := make([]string, 0, len(parts))
+	for _, t := range parts {
+		t = strings.TrimSpace(t)
+		if t != "" {
+			tags = append(tags, t)
+		}
+	}
+	return tags
+}
+
+// ToolPrefixes returns the skill's tool prefixes as a slice.
+func (s *Skill) ToolPrefixes() []string {
+	if s.Metadata.ToolPrefixes == "" {
+		return nil
+	}
+	parts := strings.Split(s.Metadata.ToolPrefixes, ",")
+	prefixes := make([]string, 0, len(parts))
+	for _, p := range parts {
+		p = strings.TrimSpace(p)
+		if p != "" {
+			prefixes = append(prefixes, p)
+		}
+	}
+	return prefixes
+}
+
+// MatchesQuery returns true if the skill is relevant to the given query.
+func (s *Skill) MatchesQuery(query string) bool {
+	q := strings.ToLower(query)
+	return strings.Contains(strings.ToLower(s.Name), q) ||
+		strings.Contains(strings.ToLower(s.Description), q) ||
+		strings.Contains(strings.ToLower(s.Metadata.Tags), q)
+}
+
+// mergeEvolvedContent appends SKILL.evolved.md content to a loaded skill's Markdown.
+func mergeEvolvedContent(skill *Skill) {
+	evolvedData, err := os.ReadFile(skill.EvolvedPath())
+	if err != nil {
+		return // no evolved file — nothing to merge
+	}
+	evolved := strings.TrimSpace(string(evolvedData))
+	if evolved != "" {
+		skill.Markdown = strings.TrimRight(skill.Markdown, "\n\r\t ") + "\n\n" + evolved
+	}
 }
 
 // extractLearnedPatterns extracts bullet-point lines from a "Learned Patterns" section.

@@ -82,7 +82,7 @@ graph TD
 ```bash
 git clone https://github.com/sivakumar455/memcp.git
 cd memcp
-make build
+make build           # builds bin/memcp
 ```
 
 ### Register as MCP Server
@@ -190,18 +190,22 @@ Configuration is loaded from `configs/standalone.yaml`. Override with environmen
 
 ```
 memcp/
-├── main.go                    # Entry point (Cobra CLI)
-├── Makefile                   # Build targets
+├── cmd/memcp/                 # Main binary
+│   ├── main.go
+│   └── extensions_site.go    # Company extensions (build tag: site)
+├── extensions/                # Upstream extension examples
+│   └── webhook/               # Generic webhook watcher
 ├── configs/
 │   └── standalone.yaml        # Default config
-├── soul/                      # Persona files
+├── soul/                      # Default persona templates
 │   ├── SOUL.md                # Immutable core personality
 │   ├── IDENTITY.md            # Evolving domain knowledge
 │   └── MEMORY.md              # Auto-populated findings
-├── internal/
+├── skills/                    # Default skills (empty, user-populated)
+├── internal/                  # Core library
 │   ├── config/                # Configuration loading
 │   ├── engine/                # Core orchestrator
-│   ├── memory/                # SQLite store (CRUD, FTS5)
+│   ├── memory/                # SQLite store (CRUD, FTS5, vector search)
 │   ├── mcp/                   # MCP server + tool handlers
 │   ├── session/               # Session lifecycle
 │   ├── persona/               # Soul/persona file loader
@@ -211,10 +215,65 @@ memcp/
 │   ├── daemon/                # Background task queue
 │   ├── gateway/               # HTTP gateway server
 │   ├── shim/                  # Transparent observation proxy
+│   ├── embedding/             # Ollama vector embeddings
+│   ├── webui/                 # Live dashboard
 │   └── logger/                # Structured logging
-├── docs/                      # Architecture documentation
+├── site/                      # Company overrides (excluded from upstream)
+│   ├── configs/               # Company-specific configs
+│   ├── soul/                  # Company persona files
+│   ├── skills/                # Domain-specific skills
+│   └── extensions/            # Company watchers (Jira, email, etc.)
+├── scripts/setup.go           # Bootstrap script for ~/.memcp
 └── data/                      # Auto-created at runtime
     └── memory.db              # SQLite database
+```
+
+## 🔌 Extending memcp
+
+memcp supports compile-time extensions via Go build tags and the `site/` directory.
+
+### Extension Architecture
+
+1. **Upstream extensions** live under `extensions/` (e.g., `extensions/webhook/`).
+2. **Company/private extensions** live under `site/extensions/` and are gated behind the `site` build tag.
+3. The `site/` directory is excluded from upstream via `.gitattributes`.
+
+### Writing an Extension
+
+Create a new directory under `extensions/` implementing the `Watcher` interface:
+
+```go
+package myext
+
+import "github.com/sivakumar455/memcp/internal/daemon"
+
+type MyWatcher struct{}
+
+func NewWatcher() *MyWatcher         { return &MyWatcher{} }
+func (w *MyWatcher) Name() string    { return "my-extension" }
+func (w *MyWatcher) Poll(ctx context.Context) ([]daemon.Event, error) { ... }
+func (w *MyWatcher) Close() error    { return nil }
+```
+
+Register it in `cmd/memcp/main.go`'s `registerExtensions`.
+
+### Building with Site Extensions
+
+```bash
+# Upstream build (no site extensions):
+make build
+
+# Full build with site extensions:
+go build -tags site -o bin/memcp ./cmd/memcp
+```
+
+### Keeping Up with Upstream
+
+The `site/` directory is never part of upstream, so pulling updates is conflict-free:
+
+```bash
+git subtree pull --prefix=memcp-servers/memcp memcp-upstream main --squash
+make build
 ```
 
 ## 🤝 Contributing

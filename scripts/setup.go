@@ -39,8 +39,8 @@ func main() {
 	binPath := filepath.Join(cwd, "bin", "memcp")
 	fmt.Printf("Build successful! Binary located at: %s\n", binPath)
 
-	fmt.Println("\nBootstrapping default persona files in ~/.memcp/soul...")
-	bootstrapPersona(cwd)
+	fmt.Println("\nBootstrapping ~/.memcp/ data directory...")
+	bootstrapAll(cwd)
 
 	reader := bufio.NewReader(os.Stdin)
 
@@ -173,51 +173,118 @@ func manageConfig(configPath, memcpBin string, reader *bufio.Reader) {
 	fmt.Printf("\nSuccessfully updated %s!\n", configPath)
 }
 
-func bootstrapPersona(workspace string) {
+// resolveSiteDir returns site/<subdir> if it exists, otherwise <subdir>.
+// This lets site/ content (company-specific) take priority over upstream defaults.
+func resolveSiteDir(workspace, subdir string) string {
+	siteDir := filepath.Join(workspace, "site", subdir)
+	if info, err := os.Stat(siteDir); err == nil && info.IsDir() {
+		return siteDir
+	}
+	return filepath.Join(workspace, subdir)
+}
+
+// bootstrapAll copies configs, soul, and skills into ~/.memcp/ on first run.
+// Prefers site/ content over upstream defaults when available.
+//
+// With the two-file evolution model, authored files (IDENTITY.md, MEMORY.md,
+// SKILL.md, configs) can be safely overwritten from site/ because all
+// system-generated content lives in separate .evolved.md files that are
+// never touched by bootstrap.
+func bootstrapAll(workspace string) {
 	homeDir, err := os.UserHomeDir()
 	if err != nil {
 		return
 	}
-	destDir := filepath.Join(homeDir, ".memcp", "soul")
-	srcDir := filepath.Join(workspace, "soul")
+	memcpDir := filepath.Join(homeDir, ".memcp")
 
-	if err := os.MkdirAll(destDir, 0755); err != nil {
+	bootstrapConfigs(workspace, memcpDir)
+	bootstrapSoul(workspace, memcpDir)
+	bootstrapSkills(workspace, memcpDir)
+}
+
+func bootstrapConfigs(workspace, memcpDir string) {
+	srcDir := resolveSiteDir(workspace, "configs")
+	destDir := filepath.Join(memcpDir, "configs")
+	os.MkdirAll(destDir, 0755)
+
+	entries, err := os.ReadDir(srcDir)
+	if err != nil {
+		return
+	}
+	for _, entry := range entries {
+		if entry.IsDir() || !strings.HasSuffix(entry.Name(), ".yaml") {
+			continue
+		}
+		copyOrUpdate(
+			filepath.Join(srcDir, entry.Name()),
+			filepath.Join(destDir, entry.Name()),
+		)
+	}
+	fmt.Printf("  configs: %s -> %s\n", srcDir, destDir)
+}
+
+func bootstrapSoul(workspace, memcpDir string) {
+	srcDir := resolveSiteDir(workspace, "soul")
+	destDir := filepath.Join(memcpDir, "soul")
+	os.MkdirAll(destDir, 0755)
+
+	// Only copy authored persona files. .evolved.md files are system-generated
+	// and must never be overwritten or seeded by bootstrap.
+	for _, f := range []string{"SOUL.md", "IDENTITY.md", "MEMORY.md"} {
+		copyOrUpdate(
+			filepath.Join(srcDir, f),
+			filepath.Join(destDir, f),
+		)
+	}
+	fmt.Printf("  soul:    %s -> %s\n", srcDir, destDir)
+}
+
+func bootstrapSkills(workspace, memcpDir string) {
+	srcDir := resolveSiteDir(workspace, "skills")
+	destDir := filepath.Join(memcpDir, "skills")
+
+	entries, err := os.ReadDir(srcDir)
+	if err != nil {
 		return
 	}
 
-	files := []string{"SOUL.md", "IDENTITY.md"}
-	for _, f := range files {
-		srcPath := filepath.Join(srcDir, f)
-		destPath := filepath.Join(destDir, f)
-
-		// Create only if it doesn't already exist
-		if _, err := os.Stat(destPath); os.IsNotExist(err) {
-			if data, err := os.ReadFile(srcPath); err == nil {
-				os.WriteFile(destPath, data, 0644)
-			}
+	os.MkdirAll(destDir, 0755)
+	for _, entry := range entries {
+		if !entry.IsDir() {
+			continue
 		}
+		// Only copy authored SKILL.md; SKILL.evolved.md is system-generated.
+		srcPath := filepath.Join(srcDir, entry.Name(), "SKILL.md")
+		destPath := filepath.Join(destDir, entry.Name(), "SKILL.md")
+		os.MkdirAll(filepath.Join(destDir, entry.Name()), 0755)
+		copyOrUpdate(srcPath, destPath)
 	}
+	fmt.Printf("  skills:  %s -> %s\n", srcDir, destDir)
+}
 
-	// Bootstrap skills directory if it exists in the workspace
-	destSkillsDir := filepath.Join(homeDir, ".memcp", "skills")
-	srcSkillsDir := filepath.Join(workspace, "skills")
-
-	if _, err := os.Stat(srcSkillsDir); err == nil {
-		os.MkdirAll(destSkillsDir, 0755)
-
-		entries, _ := os.ReadDir(srcSkillsDir)
-		for _, entry := range entries {
-			if entry.IsDir() {
-				srcSkillPath := filepath.Join(srcSkillsDir, entry.Name(), "SKILL.md")
-				destSkillPath := filepath.Join(destSkillsDir, entry.Name(), "SKILL.md")
-
-				if _, err := os.Stat(destSkillPath); os.IsNotExist(err) {
-					if data, err := os.ReadFile(srcSkillPath); err == nil {
-						os.MkdirAll(filepath.Join(destSkillsDir, entry.Name()), 0755)
-						os.WriteFile(destSkillPath, data, 0644)
-					}
-				}
-			}
-		}
+// copyOrUpdate copies src to dest, overwriting if the source has changed.
+// With the two-file model, authored files can be safely refreshed because
+// all learned/evolved content lives in separate .evolved.md files.
+func copyOrUpdate(src, dest string) {
+	srcData, err := os.ReadFile(src)
+	if err != nil {
+		return
 	}
+	destData, _ := os.ReadFile(dest)
+	if string(srcData) == string(destData) {
+		return // already up-to-date
+	}
+	os.WriteFile(dest, srcData, 0644)
+}
+
+// copyIfMissing copies src to dest only if dest does not exist.
+func copyIfMissing(src, dest string) {
+	if _, err := os.Stat(dest); !os.IsNotExist(err) {
+		return
+	}
+	data, err := os.ReadFile(src)
+	if err != nil {
+		return
+	}
+	os.WriteFile(dest, data, 0644)
 }

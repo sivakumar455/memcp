@@ -2,53 +2,56 @@ package daemon
 
 import (
 	"fmt"
+	"log/slog"
 	"os"
 	"path/filepath"
-	"strconv"
 	"syscall"
 )
 
-// LockFile represents an exclusive lock on the daemon.
-type LockFile struct {
-	path string
+// DaemonLock uses an exclusive file lock (flock) to ensure only one memcp
+// process runs the daemon scheduler.
+type DaemonLock struct {
 	file *os.File
+	path string
 }
 
-// AcquireLock attempts to obtain an exclusive file lock.
-func AcquireLock(dataDir string) (*LockFile, error) {
+// TryAcquireDaemonLock attempts a non-blocking exclusive lock on
+// <dataDir>/daemon.lock. Returns (lock, true) on success. If another process
+// holds the lock, returns (nil, false).
+func TryAcquireDaemonLock(dataDir string) (*DaemonLock, bool) {
 	lockPath := filepath.Join(dataDir, "daemon.lock")
-	
-	// Open or create the file
-	file, err := os.OpenFile(lockPath, os.O_CREATE|os.O_RDWR, 0666)
-	if err != nil {
-		return nil, fmt.Errorf("opening lock file: %w", err)
+
+	if err := os.MkdirAll(filepath.Dir(lockPath), 0755); err != nil {
+		slog.Warn("Failed to create lock directory", "path", lockPath, "error", err)
+		return nil, false
 	}
 
-	// Try to get exclusive non-blocking lock
-	err = syscall.Flock(int(file.Fd()), syscall.LOCK_EX|syscall.LOCK_NB)
+	f, err := os.OpenFile(lockPath, os.O_CREATE|os.O_RDWR, 0644)
 	if err != nil {
-		file.Close()
-		return nil, fmt.Errorf("daemon is already running (locked): %w", err)
+		slog.Warn("Failed to open daemon lock file", "path", lockPath, "error", err)
+		return nil, false
 	}
 
-	// Write our PID into the lock file for debugging
-	pid := os.Getpid()
-	file.Truncate(0)
-	file.Seek(0, 0)
-	file.WriteString(strconv.Itoa(pid))
+	err = syscall.Flock(int(f.Fd()), syscall.LOCK_EX|syscall.LOCK_NB)
+	if err != nil {
+		f.Close()
+		return nil, false
+	}
 
-	return &LockFile{
-		path: lockPath,
-		file: file, // Keep file open to hold the lock
-	}, nil
+	_ = f.Truncate(0)
+	_, _ = f.Seek(0, 0)
+	fmt.Fprintf(f, "%d\n", os.Getpid())
+	_ = f.Sync()
+
+	slog.Info("Daemon lock acquired", "path", lockPath, "pid", os.Getpid())
+	return &DaemonLock{file: f, path: lockPath}, true
 }
 
-// Release correctly removes the lock file and releases the syscall flock.
-func (l *LockFile) Release() error {
-	defer l.file.Close()
-	
-	// Unlocking is technically implicit on close, but we can be explicit
-	syscall.Flock(int(l.file.Fd()), syscall.LOCK_UN)
-	
-	return os.Remove(l.path)
+// Release closes the lock file and releases the flock.
+func (l *DaemonLock) Release() {
+	if l == nil || l.file == nil {
+		return
+	}
+	_ = l.file.Close()
+	slog.Info("Daemon lock released", "path", l.path)
 }

@@ -218,6 +218,16 @@ func (s *Store) migrate() error {
 			return fmt.Errorf("executing %q: %w", stmt[:min(60, len(stmt))], err)
 		}
 	}
+
+	// Additive column migrations for databases created by older versions.
+	// ALTER TABLE … ADD COLUMN is safe: it's a no-op if the column already exists in SQLite.
+	alters := []string{
+		`ALTER TABLE findings ADD COLUMN embedding BLOB`,
+	}
+	for _, alt := range alters {
+		s.db.Exec(alt) // ignore "duplicate column" errors
+	}
+
 	return nil
 }
 
@@ -983,7 +993,7 @@ func (s *Store) GetFindingsByDomain(domain string, limit int) ([]*Finding, error
 		limit = 500
 	}
 	rows, err := s.db.Query(`
-		SELECT id, key, content, tags, importance, source, session_id, domain, version, created_at, updated_at
+		SELECT id, key, content, tags, importance, source, session_id, domain, version, embedding, created_at, updated_at
 		FROM findings WHERE domain = ?
 		ORDER BY updated_at DESC LIMIT ?`, domain, limit)
 	if err != nil {
@@ -1048,6 +1058,148 @@ func SanitizeContent(content string) string {
 		content = re.ReplaceAllString(content, "[REDACTED]")
 	}
 	return content
+}
+
+// --- Convenience Aliases ---
+
+const dbTimeFormat = "2006-01-02T15:04:05Z"
+
+// FormatDBTime formats a time.Time to the standard DB string format.
+func FormatDBTime(t time.Time) string { return t.UTC().Format(dbTimeFormat) }
+
+// ParseDBTime parses a DB time string back to time.Time.
+func ParseDBTime(s string) time.Time {
+	t, _ := time.Parse(dbTimeFormat, s)
+	return t
+}
+
+// GetFindingByKey is an alias for GetFinding.
+func (s *Store) GetFindingByKey(key string) (*Finding, error) { return s.GetFinding(key) }
+
+// GetRecentMessages is an alias for GetMessages.
+func (s *Store) GetRecentMessages(sessionID string, limit int) ([]*Message, error) {
+	return s.GetMessages(sessionID, limit)
+}
+
+// GetAllProfile returns all profile entries up to limit.
+func (s *Store) GetAllProfile(limit int) ([]*ProfileEntry, error) {
+	if limit <= 0 {
+		limit = 100
+	}
+	rows, err := s.db.Query(`SELECT key, value, category, hit_count, last_seen, created_at FROM profile ORDER BY hit_count DESC LIMIT ?`, limit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var entries []*ProfileEntry
+	for rows.Next() {
+		e := &ProfileEntry{}
+		var lastSeen, createdAt string
+		if err := rows.Scan(&e.Key, &e.Value, &e.Category, &e.HitCount, &lastSeen, &createdAt); err != nil {
+			continue
+		}
+		e.LastSeen, _ = time.Parse(time.RFC3339, lastSeen)
+		e.CreatedAt, _ = time.Parse(time.RFC3339, createdAt)
+		entries = append(entries, e)
+	}
+	return entries, nil
+}
+
+// LastEvolutionTime is an alias for GetLastEvolutionTime.
+func (s *Store) LastEvolutionTime() (time.Time, error) { return s.GetLastEvolutionTime() }
+
+// GetFindingsByImportance returns findings with importance >= minImportance.
+func (s *Store) GetFindingsByImportance(minImportance, limit int) ([]*Finding, error) {
+	if limit <= 0 {
+		limit = 100
+	}
+	rows, err := s.db.Query(`
+		SELECT id, key, content, tags, importance, source, session_id, domain, version, embedding, created_at, updated_at
+		FROM findings WHERE importance >= ? ORDER BY importance DESC, updated_at DESC LIMIT ?`,
+		minImportance, limit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	return s.scanFindings(rows)
+}
+
+// CountFindingsByDomain counts findings in a specific domain.
+func (s *Store) CountFindingsByDomain(domain string) (int, error) {
+	var count int
+	err := s.db.QueryRow(`SELECT COUNT(*) FROM findings WHERE domain = ?`, domain).Scan(&count)
+	return count, err
+}
+
+// CountMessagesSince returns the message count since a timestamp.
+func (s *Store) CountMessagesSince(since time.Time) (int, error) {
+	var count int
+	err := s.db.QueryRow(`SELECT COUNT(*) FROM messages WHERE created_at >= ?`, since.Format(time.RFC3339)).Scan(&count)
+	return count, err
+}
+
+// GetEvolutions returns recent evolution records as SoulEvolution.
+func (s *Store) GetEvolutions(limit int) ([]*SoulEvolution, error) {
+	return s.GetRecentEvolutions(limit)
+}
+
+// Stats holds aggregate memory statistics.
+type Stats struct {
+	Findings          int
+	PermanentFindings int
+	ToolCalls         int
+	ProfileItems      int
+	Evolutions        int
+	Sessions          int
+	UniqueToolsUsed   int
+	OldestFinding     time.Time
+	NewestToolCall    time.Time
+	TopTools          []ToolCallStat
+}
+
+// GetStats returns aggregate statistics across all memory tables.
+func (s *Store) GetStats() Stats {
+	var st Stats
+	s.db.QueryRow(`SELECT COUNT(*) FROM findings`).Scan(&st.Findings)
+	s.db.QueryRow(`SELECT COUNT(*) FROM findings WHERE importance >= 2`).Scan(&st.PermanentFindings)
+	s.db.QueryRow(`SELECT COUNT(*) FROM tool_calls`).Scan(&st.ToolCalls)
+	s.db.QueryRow(`SELECT COUNT(*) FROM profile`).Scan(&st.ProfileItems)
+	st.Evolutions, _ = s.CountEvolutions()
+	st.Sessions, _ = s.CountSessions()
+
+	s.db.QueryRow(`SELECT COUNT(DISTINCT tool_name) FROM tool_calls`).Scan(&st.UniqueToolsUsed)
+
+	var oldest, newest string
+	s.db.QueryRow(`SELECT MIN(created_at) FROM findings`).Scan(&oldest)
+	s.db.QueryRow(`SELECT MAX(created_at) FROM tool_calls`).Scan(&newest)
+	if oldest != "" {
+		st.OldestFinding, _ = time.Parse(time.RFC3339, oldest)
+	}
+	if newest != "" {
+		st.NewestToolCall, _ = time.Parse(time.RFC3339, newest)
+	}
+	st.TopTools, _ = s.GetTopToolCalls(10)
+	return st
+}
+
+// scanFindings helper to scan Finding rows (including embedding column).
+func (s *Store) scanFindings(rows *sql.Rows) ([]*Finding, error) {
+	var findings []*Finding
+	for rows.Next() {
+		f := &Finding{}
+		var embedBytes []byte
+		var createdAt, updatedAt string
+		if err := rows.Scan(&f.ID, &f.Key, &f.Content, &f.Tags, &f.Importance, &f.Source, &f.SessionID, &f.Domain, &f.Version, &embedBytes, &createdAt, &updatedAt); err != nil {
+			continue
+		}
+		if len(embedBytes) > 0 {
+			f.Embedding, _ = BytesToFloat32Array(embedBytes)
+		}
+		f.CreatedAt, _ = time.Parse(time.RFC3339, createdAt)
+		f.UpdatedAt, _ = time.Parse(time.RFC3339, updatedAt)
+		findings = append(findings, f)
+	}
+	return findings, nil
 }
 
 // --- FTS Query Sanitization ---

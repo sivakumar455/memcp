@@ -14,6 +14,12 @@ const (
 	FileSoul     = "SOUL.md"
 	FileIdentity = "IDENTITY.md"
 	FileMemory   = "MEMORY.md"
+
+	// Evolved variants — written exclusively by the evolution engine.
+	// Authored (.md) files are owned by the user/site; evolved files are
+	// system-generated and can be safely regenerated from the findings DB.
+	FileIdentityEvolved = "IDENTITY.evolved.md"
+	FileMemoryEvolved   = "MEMORY.evolved.md"
 )
 
 // Loader manages persona file loading and updates.
@@ -51,6 +57,8 @@ type PersonaFile struct {
 }
 
 // LoadAll loads all three persona files in order: SOUL.md, IDENTITY.md, MEMORY.md.
+// For IDENTITY.md and MEMORY.md, the corresponding .evolved.md file is appended
+// (authored content first, then system-evolved content).
 // Applies per-file and total character limits with section-aware truncation.
 func (l *Loader) LoadAll() ([]*PersonaFile, error) {
 	files := []string{FileSoul, FileIdentity, FileMemory}
@@ -58,7 +66,6 @@ func (l *Loader) LoadAll() ([]*PersonaFile, error) {
 	totalChars := 0
 
 	for _, name := range files {
-		// Check if we've exhausted the total budget
 		remaining := l.totalMaxChars - totalChars
 		if remaining <= 0 {
 			break
@@ -66,11 +73,21 @@ func (l *Loader) LoadAll() ([]*PersonaFile, error) {
 
 		pf, err := l.loadFile(name, remaining)
 		if err != nil {
-			// File not found is not fatal — just skip it
 			if os.IsNotExist(err) {
 				continue
 			}
 			return nil, fmt.Errorf("loading %s: %w", name, err)
+		}
+
+		// Append evolved content for IDENTITY.md and MEMORY.md
+		if evolved := evolvedName(name); evolved != "" {
+			remaining2 := l.totalMaxChars - totalChars - len(pf.Content)
+			if remaining2 > 0 {
+				epf, err := l.loadFile(evolved, remaining2)
+				if err == nil {
+					pf.Content += "\n\n" + epf.Content
+				}
+			}
 		}
 
 		loaded = append(loaded, pf)
@@ -80,8 +97,8 @@ func (l *Loader) LoadAll() ([]*PersonaFile, error) {
 	return loaded, nil
 }
 
-// LoadForContext loads SOUL.md and IDENTITY.md for Tier 0 context injection.
-// MEMORY.md is excluded (it's covered by Tier 2 via FTS5 search).
+// LoadForContext loads SOUL.md and IDENTITY.md (+ IDENTITY.evolved.md) for
+// Tier 0 context injection. MEMORY.md is excluded (covered by Tier 2 via FTS5).
 func (l *Loader) LoadForContext() (string, error) {
 	files := []string{FileSoul, FileIdentity}
 	var sections []string
@@ -101,8 +118,19 @@ func (l *Loader) LoadForContext() (string, error) {
 			return "", fmt.Errorf("loading %s: %w", name, err)
 		}
 
-		sections = append(sections, fmt.Sprintf("--- %s ---\n%s", name, pf.Content))
-		totalChars += len(pf.Content)
+		combined := pf.Content
+		if evolved := evolvedName(name); evolved != "" {
+			remaining2 := l.totalMaxChars - totalChars - len(combined)
+			if remaining2 > 0 {
+				epf, err := l.loadFile(evolved, remaining2)
+				if err == nil {
+					combined += "\n\n" + epf.Content
+				}
+			}
+		}
+
+		sections = append(sections, fmt.Sprintf("--- %s ---\n%s", name, combined))
+		totalChars += len(combined)
 	}
 
 	return strings.Join(sections, "\n\n"), nil
@@ -126,10 +154,9 @@ func (l *Loader) ReadFile(name string) (string, error) {
 // SOUL.md is immutable and cannot be updated through this method.
 func (l *Loader) UpdateFile(name, content string) error {
 	if !isValidPersonaFile(name) {
-		return fmt.Errorf("invalid persona file: %s (must be SOUL.md, IDENTITY.md, or MEMORY.md)", name)
+		return fmt.Errorf("invalid persona file: %s (valid: SOUL.md, IDENTITY.md, MEMORY.md, or .evolved.md variants)", name)
 	}
 
-	// SOUL.md is immutable
 	if name == FileSoul {
 		return fmt.Errorf("SOUL.md is immutable and cannot be modified by the system. Only the user can edit it directly")
 	}
@@ -144,6 +171,7 @@ func (l *Loader) UpdateFile(name, content string) error {
 }
 
 // ViewAll returns all persona files concatenated with section headers.
+// Evolved content is already merged into each file by LoadAll.
 func (l *Loader) ViewAll() (string, error) {
 	files, err := l.LoadAll()
 	if err != nil {
@@ -159,6 +187,25 @@ func (l *Loader) ViewAll() (string, error) {
 		sections = append(sections, fmt.Sprintf("--- %s ---\n%s", pf.Name, pf.Content))
 	}
 	return strings.Join(sections, "\n\n"), nil
+}
+
+// File is a simplified persona file representation (name + content only).
+type File struct {
+	Name    string
+	Content string
+}
+
+// Load returns persona files as simplified File structs (compatibility alias).
+func (l *Loader) Load() ([]File, error) {
+	pfs, err := l.LoadAll()
+	if err != nil {
+		return nil, err
+	}
+	files := make([]File, len(pfs))
+	for i, pf := range pfs {
+		files[i] = File{Name: pf.Name, Content: pf.Content}
+	}
+	return files, nil
 }
 
 // --- Internal ---
@@ -230,12 +277,27 @@ func truncateAtSectionBoundary(content string, maxLen int) string {
 	return truncated
 }
 
-// isValidPersonaFile checks if a filename is one of the three persona files.
+// isValidPersonaFile checks if a filename is one of the persona files
+// (including .evolved.md variants).
 func isValidPersonaFile(name string) bool {
 	switch name {
-	case FileSoul, FileIdentity, FileMemory:
+	case FileSoul, FileIdentity, FileMemory,
+		FileIdentityEvolved, FileMemoryEvolved:
 		return true
 	default:
 		return false
+	}
+}
+
+// evolvedName returns the .evolved.md counterpart for a persona file,
+// or "" if none exists (SOUL.md has no evolved variant).
+func evolvedName(name string) string {
+	switch name {
+	case FileIdentity:
+		return FileIdentityEvolved
+	case FileMemory:
+		return FileMemoryEvolved
+	default:
+		return ""
 	}
 }
